@@ -1,0 +1,32 @@
+{
+  "name": "vault-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "sync:once": "tsx src/cli/sync-once.ts",
+    "backup:once": "tsx src/cli/backup-once.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1164.0",
+    "@hono/node-server": "2.1.6",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "archiver": "8.0.0",
+    "hono": "4.13.17",
+    "node-cron": "4.6.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/archiver": "8.0.0",
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

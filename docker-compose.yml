@@ -1,0 +1,46 @@
+name: vault-stack
+
+services:
+  # Bridges your LiveSync CouchDB to a plain directory. It owns all
+  # encryption, path obfuscation, chunking and conflict resolution, so
+  # vault-service only ever sees ordinary markdown files.
+  livesync-bridge:
+    build: https://github.com/vrtmrz/livesync-bridge.git
+    # Pin this once you are happy with it, e.g.
+    #   build: https://github.com/vrtmrz/livesync-bridge.git#<commit-sha>
+    volumes:
+      - ./livesync-bridge/dat:/app/dat:ro
+      - vault_data:/app/data/vault
+      - bridge_state:/deno-dir/location_data
+    restart: unless-stopped
+    networks: [vault]
+
+  vault-service:
+    build: .
+    image: vault-service:0.1.0
+    env_file: .env
+    environment:
+      VAULT_DIR: /vault
+      PORT: "8080"
+    volumes:
+      - vault_data:/vault
+    # Auth is a single access key, so do not expose this publicly. Bound to
+    # loopback; put a TLS terminator in front if you need remote access.
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    depends_on: [livesync-bridge]
+    networks: [vault]
+
+volumes:
+  vault_data:
+  bridge_state:
+
+networks:
+  vault:
+    # Your CouchDB already runs on this host. Either attach it to this network,
+    # or replace the block below with the network it is already on:
+    #   vault:
+    #     external: true
+    #     name: <existing-couchdb-network>
+    driver: bridge

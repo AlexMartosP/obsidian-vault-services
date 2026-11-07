@@ -1,0 +1,33 @@
+{
+    "peers": [
+        {
+            "type": "couchdb",
+            "name": "couch",
+            "group": "vault",
+            "url": "http://couchdb:5984",
+            "database": "REPLACE_DB",
+            "username": "REPLACE_USER",
+            "password": "REPLACE_PASSWORD",
+            "passphrase": "REPLACE_E2EE_PASSPHRASE",
+            "obfuscatePassphrase": "REPLACE_E2EE_PASSPHRASE",
+            "baseDir": "Work/Jira/",
+            "useRemoteTweaks": true,
+            "customChunkSize": 0,
+            "minimumChunkSize": 20
+        },
+        {
+            "type": "storage",
+            "name": "files",
+            "group": "vault",
+            "baseDir": "./data/vault/Work/Jira/",
+            "scanOfflineChanges": true,
+            "useChokidar": true,
+            "ignore": [
+                ".*.tmp-*",
+                "**/.*.tmp-*",
+                "**/.obsidian/**",
+                "**/.git/**"
+            ]
+        }
+    ]
+}
