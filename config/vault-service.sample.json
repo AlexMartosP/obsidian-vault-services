@@ -1,0 +1,46 @@
+{
+  "vaultDir": "/vault",
+  "server": { "port": 8080 },
+
+  "jira": {
+    "baseUrl": "https://minuthq.atlassian.net",
+
+    "//jql": [
+      "Which work items appear in the vault. This is the only thing that",
+      "decides it: anything the query returns gets a note, anything it stops",
+      "returning has its note deleted on the next reconcile.",
+      "Types are excluded rather than listed so the Swedish subtask type",
+      "'Deluppgift' in the WEB project is included too."
+    ],
+    "jql": "assignee = currentUser() AND issuetype not in (Epic, Story) AND status in (\"In Progress\", \"In Review\") ORDER BY updated DESC",
+
+    "//targetSubdir": "Where the notes live, relative to the vault root. This folder is owned by the sync.",
+    "targetSubdir": "Work/Jira",
+
+    "//taskContext": "TaskNotes context, this is what the Work tasks base filters on.",
+    "taskContext": "Work",
+
+    "//reviewStatus": "TaskNotes status for Jira 'In Review'. Your TaskNotes config defines only none/open/in-progress/done, so leave this as in-progress until you add an in-review status.",
+    "reviewStatus": "in-progress",
+
+    "//reconcileCron": "Safety net behind the webhook, because webhooks get dropped.",
+    "reconcileCron": "*/20 * * * *",
+    "webhookDebounceMs": 2000
+  },
+
+  "backup": {
+    "cron": "0 3 * * *",
+    "bucket": "REPLACE_BUCKET",
+    "//endpoint": "Cloudflare R2: https://<account-id>.r2.cloudflarestorage.com. null for real AWS.",
+    "endpoint": null,
+    "region": "auto",
+    "prefix": "vault-backups",
+    "forcePathStyle": true
+  },
+
+  "couchdb": {
+    "//": "Only used for the raw encrypted backup artifact. Credentials stay in the environment.",
+    "url": "http://couchdb:5984",
+    "database": "REPLACE_DB"
+  }
+}

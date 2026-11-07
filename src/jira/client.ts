@@ -33,6 +33,24 @@ const searchResponseSchema = z.object({
 
 export class JiraError extends Error {}
 
+/**
+ * Identity check, and it is load bearing rather than cosmetic.
+ *
+ * `POST /rest/api/3/search/jql` answers HTTP 200 with `{"issues":[]}` when the
+ * credentials are wrong, and even when there are no credentials at all:
+ * `assignee = currentUser()` resolves to nobody, and zero matches is a valid
+ * answer to a valid query. Verified against minuthq.atlassian.net.
+ *
+ * Taken at face value that empty list means "nothing is active any more",
+ * which would delete every synced note the moment an API token expired. So
+ * before trusting any result we confirm the request is actually authenticated
+ * as the configured account, and treat failure as "state unknown".
+ */
+const myselfSchema = z.object({
+    accountId: z.string().min(1),
+    emailAddress: z.string().nullish(),
+});
+
 /** Guard against an unbounded loop if Jira keeps handing back page tokens. */
 const MAX_PAGES = 50;
 const PAGE_SIZE = 100;
@@ -46,11 +64,46 @@ export class JiraClient {
     }
 
     /**
+     * Confirm we are authenticated as the configured account.
+     *
+     * Throws if the request is anonymous, the token is rejected, or the token
+     * belongs to somebody else. See the note on `myselfSchema` for why an
+     * empty search result cannot be trusted without this.
+     */
+    async verifyIdentity(signal?: AbortSignal): Promise<{ accountId: string }> {
+        const url = `${this.config.baseUrl.replace(/\/+$/, "")}/rest/api/3/myself`;
+        const parsed = myselfSchema.safeParse(await this.request("GET", url, undefined, signal));
+        if (!parsed.success) {
+            throw new JiraError(
+                "could not confirm the Jira account for these credentials, " +
+                    "refusing to act on the result",
+            );
+        }
+
+        const actual = parsed.data.emailAddress;
+        // Jira hides the address under some privacy settings, so only compare
+        // when it is actually returned.
+        if (
+            typeof actual === "string" &&
+            actual.toLowerCase() !== this.config.email.toLowerCase()
+        ) {
+            throw new JiraError(
+                `credentials belong to ${actual}, not ${this.config.email}, refusing to sync`,
+            );
+        }
+        return { accountId: parsed.data.accountId };
+    }
+
+    /**
      * Every issue matching the configured JQL. Throws on any transport or
      * protocol failure; callers must treat a throw as "state unknown" and
      * leave the vault untouched.
      */
     async searchActive(signal?: AbortSignal): Promise<JiraIssue[]> {
+        // Must happen before the search, so an auth failure can never be
+        // mistaken for an empty result set.
+        await this.verifyIdentity(signal);
+
         const url = `${this.config.baseUrl.replace(/\/+$/, "")}/rest/api/3/search/jql`;
         const collected: JiraIssue[] = [];
         let pageToken: string | null = null;
@@ -63,7 +116,7 @@ export class JiraClient {
             };
             if (pageToken !== null) body["nextPageToken"] = pageToken;
 
-            const response = await this.post(url, body, signal);
+            const response = await this.request("POST", url, body, signal);
             const parsed = searchResponseSchema.safeParse(response);
             if (!parsed.success) {
                 throw new JiraError(
@@ -88,21 +141,22 @@ export class JiraClient {
         return collected;
     }
 
-    private async post(
+    private async request(
+        method: "GET" | "POST",
         url: string,
-        body: Record<string, unknown>,
+        body: Record<string, unknown> | undefined,
         signal?: AbortSignal,
     ): Promise<unknown> {
         let response: Response;
         try {
             response = await fetch(url, {
-                method: "POST",
+                method,
                 headers: {
                     Authorization: this.authHeader,
                     "Content-Type": "application/json",
                     Accept: "application/json",
                 },
-                body: JSON.stringify(body),
+                ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
                 ...(signal ? { signal } : {}),
             });
         } catch (err) {

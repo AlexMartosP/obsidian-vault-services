@@ -19,11 +19,11 @@ services:
     build: .
     image: vault-service:0.1.0
     env_file: .env
-    environment:
-      VAULT_DIR: /vault
-      PORT: "8080"
     volumes:
       - vault_data:/vault
+      # Non-secret behaviour: the JQL, where notes live, schedules.
+      # Copy config/vault-service.sample.json to config/vault-service.json.
+      - ./config:/config:ro
     # Auth is a single access key, so do not expose this publicly. Bound to
     # loopback; put a TLS terminator in front if you need remote access.
     ports:

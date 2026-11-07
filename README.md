@@ -23,8 +23,11 @@ CouchDB  <--->  livesync-bridge  <--->  /vault (shared volume)  <--->  vault-ser
 
 ```sh
 git clone <this repo> && cd vault-service
-cp .env.example .env            # fill it in, see the comments in the file
-openssl rand -hex 32            # use this for ACCESS_KEY
+cp .env.example .env                                        # secrets
+openssl rand -hex 32                                        # ACCESS_KEY
+
+cp config/vault-service.sample.json config/vault-service.json
+# behaviour: the JQL, where notes live, schedules, bucket, CouchDB location
 
 cp livesync-bridge/dat/config.sample.json livesync-bridge/dat/config.json
 # fill in CouchDB url, database, credentials, and your E2EE passphrase
@@ -43,42 +46,72 @@ Take a CouchDB backup before the first run regardless.
 
 ## Configuration
 
-Every setting is an environment variable, documented in `.env.example`. Two behaviours worth knowing:
+Two places, split on purpose:
 
-- **Features are enabled by presence.** No `JIRA_EMAIL`/`JIRA_API_TOKEN` means Jira sync is off; no `S3_BUCKET` means backups are off. `/health` reports which are live.
-- **A partly filled group is a startup error, not a silent disable.** Setting `S3_BUCKET` but forgetting `S3_SECRET_ACCESS_KEY` fails fast with both names in the message, so a typo can never quietly turn backups off.
+| | Holds | Example |
+|---|---|---|
+| `config/vault-service.json` | Non-secret behaviour | the JQL, where notes live, schedules, bucket name, CouchDB location |
+| `.env` | Secrets only | `ACCESS_KEY`, Jira token, S3 keys, CouchDB password |
+
+Precedence is **defaults < config file < environment**. Anything in the file can still be overridden per deployment by its environment variable, listed commented-out at the bottom of `.env.example`.
+
+The config file is mounted read-only and is optional: with no file at all, built-in defaults apply. Start `config/vault-service.sample.json` by copying it; it is validated against the real schema in CI-style tests, so it parses as shipped.
+
+Three behaviours worth knowing:
+
+- **Features are enabled by credentials, never by the config file.** Putting `backup.bucket` in the file does nothing until `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` exist. `/health` reports which features are live.
+- **A partly filled credential group is a startup error.** Setting `S3_ACCESS_KEY_ID` but forgetting `S3_SECRET_ACCESS_KEY` fails fast with both names in the message, so a typo cannot quietly turn backups off.
+- **Config file typos are errors, at every level.** The schema is strict throughout, so `jira.jqlTypo` is rejected rather than silently ignored. JSON has no comments, so any key starting with `//` is dropped before validation, which is how the sample documents itself inline.
+
+Changing the file takes effect on restart: `docker compose restart vault-service`. If you change `server.port`, update the published port and the healthcheck in `docker-compose.yml` to match.
 
 ## Jira sync
 
-Default query, overridable with `JIRA_JQL`:
+**One direction only: Jira to the vault.** The service makes exactly one kind of Jira call, a search. It never creates, edits, transitions or comments on an issue, and holds no write credentials path to do so. Jira stays the system of record.
 
+A note is a pointer, not a copy. The entire body is one line:
+
+```markdown
+[TT-4714: BE: Say in the home timeline when Smart alarm armed or disarmed](https://minuthq.atlassian.net/browse/TT-4714)
 ```
-assignee = currentUser()
-AND issuetype not in (Epic, Story)
-AND status in ("In Progress", "In Review")
+
+Title and link, nothing else. Everything real lives in Jira.
+
+**The JQL is the only thing that decides what exists.** Set `jira.jql` in the config file:
+
+```json
+"jql": "assignee = currentUser() AND issuetype not in (Epic, Story) AND status in (\"In Progress\", \"In Review\") ORDER BY updated DESC"
 ```
+
+- A work item the query returns gets a note.
+- A work item the query stops returning has its note **deleted** on the next reconcile. Status change, reassignment, resolution, or you editing the JQL itself: all the same thing, it no longer matches, so it goes.
+
+Nothing is archived and no tombstone is left. That is deliberate, since the note held nothing but a link.
 
 Issue types are excluded rather than listed on purpose. The WEB project uses the Swedish subtask type `Deluppgift`, which an explicit `issuetype in (Sub-task, Task, Bug)` list would silently miss.
 
-Notes land in `JIRA_TARGET_SUBDIR` (default `Work/Jira`) as TaskNotes notes carrying `tags: [task]` and `contexts: [Work]`, so they appear in the existing `Work tasks` base next to hand-written tasks. The body is just the title and a link.
+Notes land in `jira.targetSubdir` (default `Work/Jira`) carrying `tags: [task]` and `contexts: [Work]`, so they appear in the existing `Work tasks` base alongside hand-written tasks.
+
+Because the notes are regenerated from Jira, **edits you make to them do not survive**. Change the body of a synced note and the next reconcile overwrites it; the folder is owned by the sync. Hand-written notes in the same folder are untouched, as they lack the ownership marker.
 
 ### Guarantees
 
 - **Only notes it owns are ever modified or deleted.** Ownership is `source: jira` inside the frontmatter. A hand-written note, even one that mentions `source: jira` in its body, is left alone.
 - **A Jira failure changes nothing.** Jira is queried first and a failure propagates before any write or delete, so a network blip cannot empty the folder.
+- **An empty result is never trusted on its own.** This one is not theoretical. `POST /rest/api/3/search/jql` answers **HTTP 200 with `{"issues":[]}` when the credentials are wrong, and even when there are none at all**, because `assignee = currentUser()` resolves to nobody and zero matches is a valid answer to a valid query. Verified against `minuthq.atlassian.net`. Taken at face value, an expired API token would read as "nothing is active any more" and delete every synced note. So each reconcile first proves identity via `/rest/api/3/myself`, which *does* return 401, and also refuses if the token belongs to a different account than the configured email. A failure there aborts before the search even runs.
 - **Idempotent.** A run that finds no changes rewrites no files and does not touch mtimes, which is what stops a write/sync/write echo loop with the bridge.
 - **Atomic writes.** Notes are written to a dot-prefixed temp file and renamed, so the bridge's watcher never sees a half-written note. The sample bridge config ignores those temp names.
 - **Duplicate keys are handled, not assumed away.** If two notes claim one Jira key, the lexicographically first path wins and the rest are pruned with a warning.
 
 ### Realtime
 
-Point a Jira webhook at `POST /jira/webhook?secret=<JIRA_WEBHOOK_SECRET>` for `jira:issue_updated`. The payload is ignored by design: a full reconcile is one JQL call and is immune to missed, duplicated or reordered events. Bursts are debounced (`JIRA_WEBHOOK_DEBOUNCE_MS`) and runs are serialised, so overlapping events cannot race on the same files.
+Point a Jira webhook at `POST /jira/webhook?secret=<JIRA_WEBHOOK_SECRET>` (that one stays in `.env`, it is a secret) for `jira:issue_updated`. The payload is ignored by design: a full reconcile is one JQL call and is immune to missed, duplicated or reordered events. Bursts are debounced (`jira.webhookDebounceMs`) and runs are serialised, so overlapping events cannot race on the same files.
 
-`JIRA_RECONCILE_CRON` still runs regardless, because webhooks do get dropped and a missed delete would otherwise leave a stale note forever.
+`jira.reconcileCron` still runs regardless, because webhooks do get dropped and a missed delete would otherwise leave a stale note forever.
 
 ## Backups
 
-`BACKUP_CRON` produces two independent artifacts:
+`backup.cron` produces two independent artifacts:
 
 | Artifact | Key | Contents | Restorable without passphrase |
 |---|---|---|---|
