@@ -23,6 +23,28 @@ const envSchema = z.object({
     COUCHDB_PASSWORD: z.string().min(1),
     VAULT_E2EE_PASSPHRASE: z.string().min(1),
     /**
+     * Document ID derivation key. Newer LiveSync derives document IDs from
+     * this, and the bridge refuses to touch a database whose IDs it cannot
+     * reproduce: "Direct database document IDs do not match the configured
+     * ID key."
+     *
+     * Obsidian stores it only as `encryptedIdDerivationKey`, so it cannot be
+     * read out of the vault; copy the recovery code from the LiveSync
+     * settings instead. Both the raw 64-char hex key and the
+     * `sls-id-v1:<key>` recovery code are accepted.
+     *
+     * Optional: a vault that does not use ID derivation needs no key, and
+     * sending an empty one would be worse than sending none.
+     */
+    VAULT_ID_DERIVATION_KEY: z
+        .string()
+        .transform((v) => v.trim().replace(/^sls-id-v1:/, "").toLowerCase())
+        .refine((v) => /^[0-9a-f]{64}$/.test(v), {
+            message:
+                "must be a 64 character hex key, or the sls-id-v1: recovery code from LiveSync settings",
+        })
+        .optional(),
+    /**
      * Scope of the sync, as a vault relative folder with a trailing slash.
      * Defaults narrow on purpose: a wrong config then affects one folder
      * rather than the whole vault. Set to "" to sync everything.
@@ -95,6 +117,12 @@ export function buildBridgeConfig(env: Record<string, string | undefined>): Brid
                 useRemoteTweaks: true,
                 customChunkSize: e.BRIDGE_CUSTOM_CHUNK_SIZE,
                 minimumChunkSize: e.BRIDGE_MINIMUM_CHUNK_SIZE,
+                // Omitted entirely when unset. The bridge selects
+                // idDerivationVersion 1 by itself once a key is present, so
+                // that is left to it rather than asserted here.
+                ...(e.VAULT_ID_DERIVATION_KEY !== undefined
+                    ? { idDerivationKey: e.VAULT_ID_DERIVATION_KEY }
+                    : {}),
             },
             {
                 type: "storage",
@@ -116,7 +144,10 @@ export function redactBridgeConfig(config: BridgeConfig): string {
     return JSON.stringify(
         config,
         (key, value: unknown) =>
-            key === "password" || key === "passphrase" || key === "obfuscatePassphrase"
+            key === "password" ||
+            key === "passphrase" ||
+            key === "obfuscatePassphrase" ||
+            key === "idDerivationKey"
                 ? "<redacted>"
                 : value,
         2,

@@ -90,3 +90,53 @@ describe("bridge config rendering", () => {
         expect(redacted).toContain("Work/Jira/");
     });
 });
+
+describe("document ID derivation key", () => {
+    /**
+     * Without this the bridge connects, reads the database, and then refuses
+     * it: "Direct database document IDs do not match the configured ID key."
+     */
+    const KEY = "a".repeat(64);
+
+    it("is omitted entirely when unset, rather than sent empty", () => {
+        const [couch] = peers(base);
+        expect("idDerivationKey" in couch).toBe(false);
+    });
+
+    it("passes a raw hex key through", () => {
+        const [couch] = peers({ ...base, VAULT_ID_DERIVATION_KEY: KEY });
+        expect(couch.idDerivationKey).toBe(KEY);
+    });
+
+    it("accepts the sls-id-v1 recovery code and normalises it", () => {
+        const [couch] = peers({ ...base, VAULT_ID_DERIVATION_KEY: `sls-id-v1:${KEY}` });
+        expect(couch.idDerivationKey).toBe(KEY);
+    });
+
+    it("tolerates surrounding whitespace and uppercase from a copy paste", () => {
+        const [couch] = peers({
+            ...base,
+            VAULT_ID_DERIVATION_KEY: `  sls-id-v1:${"A".repeat(64)}  `,
+        });
+        expect(couch.idDerivationKey).toBe(KEY);
+    });
+
+    it("rejects a malformed key early, with a message that says what to paste", () => {
+        expect(() => buildBridgeConfig({ ...base, VAULT_ID_DERIVATION_KEY: "nope" })).toThrow(
+            /VAULT_ID_DERIVATION_KEY/,
+        );
+    });
+
+    it("never logs the key", () => {
+        const redacted = redactBridgeConfig(
+            buildBridgeConfig({ ...base, VAULT_ID_DERIVATION_KEY: KEY }),
+        );
+        expect(redacted).not.toContain(KEY);
+        expect(redacted).toContain("<redacted>");
+    });
+
+    it("does not let idDerivationVersion be guessed here", () => {
+        const [couch] = peers({ ...base, VAULT_ID_DERIVATION_KEY: KEY });
+        expect("idDerivationVersion" in couch).toBe(false);
+    });
+});

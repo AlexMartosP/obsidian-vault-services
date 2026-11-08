@@ -166,6 +166,7 @@ The same variables feed the service's own CouchDB access for the encrypted backu
 | `COUCHDB_URL`, `COUCHDB_DB` | bridge and service |
 | `COUCHDB_USER`, `COUCHDB_PASSWORD` | bridge and service |
 | `VAULT_E2EE_PASSPHRASE` | bridge only, and it is the secret that matters most |
+| `VAULT_ID_DERIVATION_KEY` | bridge only, see below |
 | `BRIDGE_BASE_DIR` | bridge, how much of the vault to sync |
 
 A missing or blank value is refused by name rather than rendering an empty password:
@@ -174,6 +175,23 @@ A missing or blank value is refused by name rather than rendering an empty passw
 bridge config not rendered  error=cannot render the livesync-bridge config,
 these are missing or invalid: VAULT_E2EE_PASSPHRASE
 ```
+
+### The document ID derivation key
+
+Newer LiveSync derives document IDs from a key, and the bridge refuses to touch a database whose IDs it cannot reproduce:
+
+```
+[couch] Error: Direct database document IDs do not match the configured ID key.
+```
+
+That appears *after* a successful connection, so it looks like a data problem rather than a missing setting. Obsidian stores the key only as `encryptedIdDerivationKey` in the plugin's `data.json`, so it cannot be read out of the vault. Copy the **recovery code** from the LiveSync settings instead and set `VAULT_ID_DERIVATION_KEY`. Both forms are accepted:
+
+```
+VAULT_ID_DERIVATION_KEY=sls-id-v1:<64 hex chars>
+VAULT_ID_DERIVATION_KEY=<64 hex chars>
+```
+
+The value is normalised, validated before the bridge ever sees it, and redacted in logs. It is omitted from the rendered config entirely when unset, since a vault that does not use ID derivation needs no key and an empty one is worse than none. `idDerivationVersion` is deliberately not set here: the bridge selects version 1 itself once a key is present.
 
 `BRIDGE_BASE_DIR` is the one exception to blank-means-missing, because empty genuinely means "sync the whole vault" there. It defaults to `Work/Jira/` so a wrong config affects one folder rather than everything; both peers are kept in step automatically.
 
