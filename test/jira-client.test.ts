@@ -156,3 +156,40 @@ describe("search behaviour", () => {
         await expect(new JiraClient(config()).searchActive()).rejects.toThrow(/could not reach Jira/);
     });
 });
+
+describe("scoped tokens that cannot read the account", () => {
+    /**
+     * Regression. A scoped API token without a user-read scope gets 403 from
+     * /myself while the search works fine. Treating that as fatal blocked the
+     * sync entirely, even though 403 proves the request was authenticated,
+     * which is the only thing the check needs to establish.
+     */
+    it("continues when /myself is forbidden, since 403 still proves authentication", async () => {
+        stubFetch((url) =>
+            url.endsWith("/myself")
+                ? json({ message: "You do not have permission" }, 403)
+                : json({
+                      issues: [{ key: "ABC-1", fields: { summary: "One" } }],
+                      isLast: true,
+                  }),
+        );
+        const issues = await new JiraClient(config()).searchActive();
+        expect(issues.map((i) => i.key)).toEqual(["ABC-1"]);
+    });
+
+    it("still refuses on 401, which is the anonymous case", async () => {
+        stubFetch((url) =>
+            url.endsWith("/myself") ? json({}, 401) : json({ issues: [], isLast: true }),
+        );
+        await expect(new JiraClient(config()).searchActive()).rejects.toThrow(/HTTP 401/);
+    });
+
+    it("still refuses on 403 from the search itself", async () => {
+        stubFetch((url) =>
+            url.endsWith("/myself")
+                ? json({ accountId: "a", emailAddress: "me@example.com" })
+                : json({ message: "forbidden" }, 403),
+        );
+        await expect(new JiraClient(config()).searchActive()).rejects.toThrow(/HTTP 403/);
+    });
+});

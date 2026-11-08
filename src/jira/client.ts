@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { JiraConfig } from "../config.ts";
+import { log } from "../logger.ts";
 
 export type JiraIssue = {
     key: string;
@@ -32,6 +33,16 @@ const searchResponseSchema = z.object({
 });
 
 export class JiraError extends Error {}
+
+/** Carries the status so callers can tell "not authenticated" from "forbidden". */
+export class JiraHttpError extends JiraError {
+    constructor(
+        readonly status: number,
+        message: string,
+    ) {
+        super(message);
+    }
+}
 
 /**
  * Identity check, and it is load bearing rather than cosmetic.
@@ -70,9 +81,36 @@ export class JiraClient {
      * belongs to somebody else. See the note on `myselfSchema` for why an
      * empty search result cannot be trusted without this.
      */
-    async verifyIdentity(signal?: AbortSignal): Promise<{ accountId: string }> {
+    async verifyIdentity(signal?: AbortSignal): Promise<{ accountId: string | null }> {
         const url = `${this.config.baseUrl.replace(/\/+$/, "")}/rest/api/3/myself`;
-        const parsed = myselfSchema.safeParse(await this.request("GET", url, undefined, signal));
+
+        let body: unknown;
+        try {
+            body = await this.request("GET", url, undefined, signal);
+        } catch (err) {
+            /**
+             * 403 means the credentials were accepted and then refused for
+             * this endpoint, which is what a scoped API token without a
+             * user-read scope does. That still answers the only question that
+             * matters here: the request is not anonymous, so an empty search
+             * result is a real empty result rather than a silent auth failure.
+             *
+             * 401 is the dangerous one and stays fatal.
+             */
+            if (err instanceof JiraHttpError && err.status === 403) {
+                log.warn(
+                    "cannot read the Jira account for these credentials, continuing: " +
+                        "authentication succeeded, so an empty result is trustworthy, " +
+                        "but the account could not be confirmed. Add a user-read scope " +
+                        "to the token to restore the check.",
+                    { status: err.status },
+                );
+                return { accountId: null };
+            }
+            throw err;
+        }
+
+        const parsed = myselfSchema.safeParse(body);
         if (!parsed.success) {
             throw new JiraError(
                 "could not confirm the Jira account for these credentials, " +
@@ -167,7 +205,10 @@ export class JiraClient {
 
         if (!response.ok) {
             const detail = (await response.text().catch(() => "")).slice(0, 400);
-            throw new JiraError(`Jira returned HTTP ${response.status}: ${detail}`);
+            throw new JiraHttpError(
+                response.status,
+                `Jira returned HTTP ${response.status}: ${detail}`,
+            );
         }
 
         try {
