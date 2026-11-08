@@ -1,5 +1,6 @@
 import { z } from "zod";
 import fs from "node:fs";
+import { log } from "./logger.ts";
 import path from "node:path";
 
 /**
@@ -275,6 +276,25 @@ export function loadFileConfig(filePath: string, required: boolean): FileConfig 
     return result.data;
 }
 
+/**
+ * Environment wins over the config file, which is right in general but is a
+ * footgun for the port specifically: under Docker the compose port mapping is
+ * built from PORT, so a different `server.port` in the file would be ignored
+ * while looking authoritative. Warn rather than fail, since the env value is
+ * genuinely the correct one to use there.
+ */
+function resolvePort(env: Env, fromFile: number | undefined): number {
+    const port = intFrom(env, "PORT", fromFile, 8080);
+    const fromEnv = read(env, "PORT");
+    if (fromEnv !== undefined && fromFile !== undefined && Number(fromEnv) !== fromFile) {
+        log.warn("PORT in the environment overrides server.port in the config file", {
+            using: port,
+            ignoredFromConfigFile: fromFile,
+        });
+    }
+    return port;
+}
+
 export function loadConfig(env: Env = process.env): Config {
     const explicitFile = read(env, "CONFIG_FILE");
     const configFile = explicitFile ?? DEFAULT_CONFIG_FILE;
@@ -348,7 +368,7 @@ export function loadConfig(env: Env = process.env): Config {
 
     return {
         configFile: usedFile,
-        port: intFrom(env, "PORT", file.server?.port, 8080),
+        port: resolvePort(env, file.server?.port),
         accessKey: must(env, "ACCESS_KEY"),
         vaultDir,
         jira,

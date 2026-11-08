@@ -26,8 +26,13 @@ services:
       - ./config:/config:ro
     # Auth is a single access key, so do not expose this publicly. Bound to
     # loopback; put a TLS terminator in front if you need remote access.
+    #
+    # HOST_PORT is the only one you normally change: it must be free on the
+    # host. PORT is inside the container, where nothing else competes, so it
+    # rarely needs touching. Both come from .env so this mapping and the app
+    # can never disagree.
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
     restart: unless-stopped
     depends_on: [livesync-bridge]
     networks: [vault]

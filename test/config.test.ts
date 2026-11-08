@@ -182,3 +182,26 @@ describe("stripComments", () => {
         ).toEqual({ b: { d: [{ f: 4 }] } });
     });
 });
+
+describe("port resolution", () => {
+    it("defaults to 8080 when nothing says otherwise", () => {
+        writeConfig({});
+        expect(loadConfig(baseEnv()).port).toBe(8080);
+    });
+
+    it("takes the port from the config file", () => {
+        writeConfig({ server: { port: 9001 } });
+        expect(loadConfig(baseEnv()).port).toBe(9001);
+    });
+
+    it("lets PORT in the environment win, which is what Docker relies on", () => {
+        writeConfig({ server: { port: 9001 } });
+        expect(loadConfig(baseEnv({ PORT: "8181" })).port).toBe(8181);
+    });
+
+    it("rejects a nonsense PORT instead of silently falling back", () => {
+        writeConfig({});
+        expect(() => loadConfig(baseEnv({ PORT: "0" }))).toThrow(ConfigError);
+        expect(() => loadConfig(baseEnv({ PORT: "not-a-port" }))).toThrow(ConfigError);
+    });
+});

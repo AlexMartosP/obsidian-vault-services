@@ -33,7 +33,7 @@ cp livesync-bridge/dat/config.sample.json livesync-bridge/dat/config.json
 # fill in CouchDB url, database, credentials, and your E2EE passphrase
 
 docker compose up -d --build
-curl -s localhost:8080/health
+curl -s localhost:${HOST_PORT:-8181}/health
 ```
 
 Your CouchDB already runs on this host. Either attach it to the `vault` network that compose creates, or point the `networks` block in `docker-compose.yml` at the network CouchDB is already on.
@@ -63,7 +63,20 @@ Three behaviours worth knowing:
 - **A partly filled credential group is a startup error.** Setting `S3_ACCESS_KEY_ID` but forgetting `S3_SECRET_ACCESS_KEY` fails fast with both names in the message, so a typo cannot quietly turn backups off.
 - **Config file typos are errors, at every level.** The schema is strict throughout, so `jira.jqlTypo` is rejected rather than silently ignored. JSON has no comments, so any key starting with `//` is dropped before validation, which is how the sample documents itself inline.
 
-Changing the file takes effect on restart: `docker compose restart vault-service`. If you change `server.port`, update the published port and the healthcheck in `docker-compose.yml` to match.
+Changing the file takes effect on restart: `docker compose restart vault-service`.
+
+### Ports
+
+Two separate ports, and normally you only care about the first:
+
+| Variable | Side | Default | Change it when |
+|---|---|---|---|
+| `HOST_PORT` | Host | `8181` | The default is already taken on the host |
+| `PORT` | Inside the container | `8080` | Rarely, nothing else runs in there |
+
+Compose builds its mapping from both (`127.0.0.1:${HOST_PORT}:${PORT}`), so the published port and the app cannot drift apart. Published on loopback only, because authentication is a single shared key.
+
+Under Docker, set the port in `.env` rather than `server.port` in the config file: compose reads the environment, so a file-only value would be ignored while looking authoritative. The service warns at startup if the two disagree. `server.port` is still there for running outside a container.
 
 ## Jira sync
 
@@ -200,7 +213,7 @@ Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`
   "mcpServers": {
     "vault": {
       "type": "http",
-      "url": "http://<host>:8080/mcp",
+      "url": "http://<host>:<HOST_PORT>/mcp",
       "headers": { "Authorization": "Bearer <ACCESS_KEY>" }
     }
   }

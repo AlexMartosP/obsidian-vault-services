@@ -2,7 +2,14 @@
   "//": "Non-secret behaviour. Secrets live in .env. Keys starting with // are comments.",
 
   "vaultDir": "/vault",
-  "server": { "port": 8080 },
+
+  "//server": [
+    "Listening port. Left out on purpose: under Docker set PORT in .env",
+    "instead, so the compose port mapping cannot drift from the app.",
+    "Environment wins over this file, and a mismatch is warned about at",
+    "startup. Useful when running outside a container.",
+    "\"server\": { \"port\": 8080 }"
+  ],
 
   "jira": {
     "baseUrl": "https://your-domain.atlassian.net",
