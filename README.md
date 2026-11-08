@@ -191,6 +191,29 @@ VAULT_ID_DERIVATION_KEY=sls-id-v1:<64 hex chars>
 VAULT_ID_DERIVATION_KEY=<64 hex chars>
 ```
 
+#### Recovering the key from the vault
+
+The error is identical whether the key is **missing** or **wrong**, because an absent key makes derivation fall back to unkeyed:
+
+```js
+// livesync-commonlib, configuredIdKey()
+if (version === 0 || version === undefined) {
+  if (key) throw new Error("An ID key requires a supported derivation version.");
+  return false;   // derivation proceeds UNKEYED, so IDs will not match
+}
+```
+
+So if the bridge still reports a mismatch after the key is set, the key itself is wrong for that vault. To settle it rather than guess, recover the authoritative key straight out of the vault:
+
+```sh
+printf '%s' 'your-passphrase' | npm run id-key -- \
+  ~/vault/.obsidian/plugins/obsidian-livesync/data.json
+```
+
+This decrypts `encryptedIdDerivationKey` locally with the `octagonal-wheels` HKDF primitives the plugin itself uses, and prints the key in both accepted forms. It talks to nothing, and the passphrase is read from stdin or `VAULT_E2EE_PASSPHRASE` rather than argv so it stays out of shell history and `ps`.
+
+A wrong passphrase is reported as such rather than yielding a plausible-looking key, and a vault that does not use ID derivation is identified so you know to leave the variable unset.
+
 The value is normalised, validated before the bridge ever sees it, and redacted in logs. It is omitted from the rendered config entirely when unset, since a vault that does not use ID derivation needs no key and an empty one is worse than none. `idDerivationVersion` is deliberately not set here: the bridge selects version 1 itself once a key is present.
 
 `BRIDGE_BASE_DIR` is the one exception to blank-means-missing, because empty genuinely means "sync the whole vault" there. It defaults to `Work/Jira/` so a wrong config affects one folder rather than everything; both peers are kept in step automatically.
@@ -497,6 +520,7 @@ VAULT_DIR=/tmp/vault ACCESS_KEY=dev npm run dev
 
 npm run sync:once      # one reconcile, then exit
 npm run backup:once    # one backup, then exit
+npm run id-key -- <data.json>   # recover the vault's ID derivation key
 ```
 
 ## Status

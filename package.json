@@ -14,7 +14,8 @@
     "test": "vitest run",
     "sync:once": "tsx src/cli/sync-once.ts",
     "backup:once": "tsx src/cli/backup-once.ts",
-    "render:bridge-config": "tsx src/cli/render-bridge-config.ts"
+    "render:bridge-config": "tsx src/cli/render-bridge-config.ts",
+    "id-key": "tsx src/cli/show-id-key.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1164.0",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/archiver": "8.0.0",
     "@types/node": "26.6.6",
+    "octagonal-wheels": "^0.1.56",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitest": "5.1.0"
