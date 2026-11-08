@@ -27,7 +27,13 @@ function writeConfig(value: unknown): void {
 
 /** Only what the service needs to boot at all. */
 function baseEnv(extra: Record<string, string> = {}): Record<string, string> {
-    return { ACCESS_KEY: "key", VAULT_DIR: vaultDir, CONFIG_FILE: configFile, ...extra };
+    return {
+        ACCESS_KEY: "key",
+        VAULT_DIR: vaultDir,
+        CONFIG_FILE: configFile,
+        JIRA_BASE_URL: "https://example.atlassian.net",
+        ...extra,
+    };
 }
 
 describe("config file", () => {
@@ -72,6 +78,31 @@ describe("config file", () => {
 
         writeConfig({ jira: { jqlTypo: "oops" } });
         expect(() => loadConfig(baseEnv())).toThrow(ConfigError);
+    });
+
+    it("requires a Jira base URL rather than defaulting to someone's host", () => {
+        writeConfig({});
+        expect(() =>
+            loadConfig({
+                ACCESS_KEY: "key",
+                VAULT_DIR: vaultDir,
+                CONFIG_FILE: configFile,
+                JIRA_EMAIL: "a@b.c",
+                JIRA_API_TOKEN: "t",
+            }),
+        ).toThrow(/needs a base URL/);
+    });
+
+    it("takes the Jira base URL from the config file and trims a trailing slash", () => {
+        writeConfig({ jira: { baseUrl: "https://acme.atlassian.net/" } });
+        const config = loadConfig({
+            ACCESS_KEY: "key",
+            VAULT_DIR: vaultDir,
+            CONFIG_FILE: configFile,
+            JIRA_EMAIL: "a@b.c",
+            JIRA_API_TOKEN: "t",
+        });
+        expect(config.jira?.baseUrl).toBe("https://acme.atlassian.net");
     });
 
     it("errors when an explicitly named config file is missing", () => {

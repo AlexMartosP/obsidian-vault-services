@@ -56,7 +56,7 @@ export function createMcpServer(store: VaultStore, syncRunner: SyncRunner | null
         {
             title: "Read a vault note",
             description: "Return the full markdown content of one note.",
-            inputSchema: { path: z.string().describe("Vault relative path, e.g. Work/Jira/TT-1.md") },
+            inputSchema: { path: z.string().describe("Vault relative path, e.g. Notes/Example.md") },
         },
         ({ path }) =>
             guarded(async () => {

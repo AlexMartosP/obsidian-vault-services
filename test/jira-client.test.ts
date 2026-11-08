@@ -93,7 +93,7 @@ describe("credentials are proven before a result is trusted", () => {
                 : json({
                       issues: [
                           {
-                              key: "TT-1",
+                              key: "ABC-1",
                               fields: {
                                   summary: "One",
                                   status: { name: "In Progress" },
@@ -105,7 +105,7 @@ describe("credentials are proven before a result is trusted", () => {
                   }),
         );
         await expect(new JiraClient(config()).searchActive()).resolves.toEqual([
-            { key: "TT-1", summary: "One", status: "In Progress", issueType: "Sub-task" },
+            { key: "ABC-1", summary: "One", status: "In Progress", issueType: "Sub-task" },
         ]);
     });
 });
@@ -125,15 +125,15 @@ describe("search behaviour", () => {
             page++;
             if (token === undefined) {
                 return json({
-                    issues: [{ key: "TT-1", fields: { summary: "a" } }],
+                    issues: [{ key: "ABC-1", fields: { summary: "a" } }],
                     nextPageToken: "p2",
                 });
             }
-            return json({ issues: [{ key: "TT-2", fields: { summary: "b" } }], isLast: true });
+            return json({ issues: [{ key: "ABC-2", fields: { summary: "b" } }], isLast: true });
         });
 
         const issues = await new JiraClient(config()).searchActive();
-        expect(issues.map((i) => i.key)).toEqual(["TT-1", "TT-2"]);
+        expect(issues.map((i) => i.key)).toEqual(["ABC-1", "ABC-2"]);
         expect(page).toBe(2);
     });
 

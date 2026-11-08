@@ -14,7 +14,7 @@ const SUBDIR = "Work/Jira";
 
 function makeConfig(): JiraConfig {
     return {
-        baseUrl: "https://minuthq.atlassian.net",
+        baseUrl: "https://example.atlassian.net",
         email: "a@b.c",
         apiToken: "token",
         jql: "irrelevant",
@@ -72,37 +72,37 @@ describe("path safety", () => {
 
     it("allows ordinary nested paths, including spaces", () => {
         const paths = new VaultPaths(vaultDir);
-        expect(() => paths.resolve("Work/Jira/TT-1 Some summary.md")).not.toThrow();
+        expect(() => paths.resolve("Work/Jira/ABC-1 Some summary.md")).not.toThrow();
     });
 
     it("strips characters Obsidian and filesystems reject, keeps spaces", () => {
-        expect(safeFilename("TT-1 a/b:c*d?e\"f<g>h|i#j^k[l]m")).toBe("TT-1 abcdefghijklm.md");
+        expect(safeFilename("ABC-1 a/b:c*d?e\"f<g>h|i#j^k[l]m")).toBe("ABC-1 abcdefghijklm.md");
     });
 });
 
 describe("reconcile", () => {
     it("creates a note per active issue", async () => {
-        const sync = new JiraSync(store, new FakeJira([issue("TT-1", "First"), issue("TT-2", "Second")]), makeConfig());
+        const sync = new JiraSync(store, new FakeJira([issue("ABC-1", "First"), issue("ABC-2", "Second")]), makeConfig());
         const r = await sync.reconcile();
         expect(r).toMatchObject({ active: 2, added: 2, updated: 0, removed: 0 });
-        expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 First.md`, `${SUBDIR}/TT-2 Second.md`]);
+        expect(await listNotes()).toEqual([`${SUBDIR}/ABC-1 First.md`, `${SUBDIR}/ABC-2 Second.md`]);
     });
 
     it("includes the ticket link and the ownership marker", async () => {
-        const sync = new JiraSync(store, new FakeJira([issue("TT-1", "First")]), makeConfig());
+        const sync = new JiraSync(store, new FakeJira([issue("ABC-1", "First")]), makeConfig());
         await sync.reconcile();
-        const body = await store.read(`${SUBDIR}/TT-1 First.md`);
+        const body = await store.read(`${SUBDIR}/ABC-1 First.md`);
         expect(body).not.toBeNull();
-        expect(body).toContain("https://minuthq.atlassian.net/browse/TT-1");
-        expect(parseSyncOwnedNote(body ?? "")).toMatchObject({ jiraKey: "TT-1" });
+        expect(body).toContain("https://example.atlassian.net/browse/ABC-1");
+        expect(parseSyncOwnedNote(body ?? "")).toMatchObject({ jiraKey: "ABC-1" });
     });
 
     it("is idempotent, so a no-change run rewrites nothing", async () => {
-        const fake = new FakeJira([issue("TT-1", "First")]);
+        const fake = new FakeJira([issue("ABC-1", "First")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
 
-        const file = path.join(vaultDir, SUBDIR, "TT-1 First.md");
+        const file = path.join(vaultDir, SUBDIR, "ABC-1 First.md");
         const before = await fs.readFile(file, "utf8");
         const statBefore = await fs.stat(file);
 
@@ -116,7 +116,7 @@ describe("reconcile", () => {
     });
 
     it("deletes the note once the issue leaves the active set", async () => {
-        const fake = new FakeJira([issue("TT-1", "First")]);
+        const fake = new FakeJira([issue("ABC-1", "First")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
         expect(await listNotes()).toHaveLength(1);
@@ -128,20 +128,20 @@ describe("reconcile", () => {
     });
 
     it("renames when the summary changes and preserves dateCreated", async () => {
-        const fake = new FakeJira([issue("TT-1", "Old title")]);
+        const fake = new FakeJira([issue("ABC-1", "Old title")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
         const created = parseSyncOwnedNote(
-            (await store.read(`${SUBDIR}/TT-1 Old title.md`)) ?? "",
+            (await store.read(`${SUBDIR}/ABC-1 Old title.md`)) ?? "",
         )?.dateCreated;
         expect(created).toBeTruthy();
 
-        fake.issues = [issue("TT-1", "New title")];
+        fake.issues = [issue("ABC-1", "New title")];
         const r = await sync.reconcile();
         expect(r).toMatchObject({ updated: 1, removed: 0 });
-        expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 New title.md`]);
+        expect(await listNotes()).toEqual([`${SUBDIR}/ABC-1 New title.md`]);
         const movedCreated = parseSyncOwnedNote(
-            (await store.read(`${SUBDIR}/TT-1 New title.md`)) ?? "",
+            (await store.read(`${SUBDIR}/ABC-1 New title.md`)) ?? "",
         )?.dateCreated;
         expect(movedCreated).toBe(created);
     });
@@ -151,7 +151,7 @@ describe("reconcile", () => {
         await store.write(handWritten, "---\nstatus: open\ntags:\n  - task\n---\n\nmine\n");
         // A note that merely mentions jira in the body must also be left alone.
         const decoy = `${SUBDIR}/Decoy.md`;
-        await store.write(decoy, "---\nstatus: open\n---\n\nsource: jira\njiraKey: TT-9\n");
+        await store.write(decoy, "---\nstatus: open\n---\n\nsource: jira\njiraKey: ABC-9\n");
 
         const sync = new JiraSync(store, new FakeJira([]), makeConfig());
         const r = await sync.reconcile();
@@ -162,7 +162,7 @@ describe("reconcile", () => {
     });
 
     it("changes nothing when Jira fails", async () => {
-        const fake = new FakeJira([issue("TT-1", "First")]);
+        const fake = new FakeJira([issue("ABC-1", "First")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
         const before = await listNotes();
@@ -179,48 +179,48 @@ describe("reconcile", () => {
      * was still active. The result even looked healthy: removed: 0, deduped: 1.
      */
     it("keeps the note when a duplicate already occupies the renamed path", async () => {
-        const fake = new FakeJira([issue("TT-1", "Old title")]);
+        const fake = new FakeJira([issue("ABC-1", "Old title")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
-        const original = (await store.read(`${SUBDIR}/TT-1 Old title.md`)) ?? "";
+        const original = (await store.read(`${SUBDIR}/ABC-1 Old title.md`)) ?? "";
 
         // Sorts after the canonical note, so it is treated as the duplicate,
         // and sits exactly where the next rename will land.
-        await store.write(`${SUBDIR}/TT-1 Zz title.md`, original);
+        await store.write(`${SUBDIR}/ABC-1 Zz title.md`, original);
 
-        fake.issues = [issue("TT-1", "Zz title")];
+        fake.issues = [issue("ABC-1", "Zz title")];
         const r = await sync.reconcile();
 
-        expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 Zz title.md`]);
-        expect(await store.read(`${SUBDIR}/TT-1 Zz title.md`)).toContain("TT-1");
+        expect(await listNotes()).toEqual([`${SUBDIR}/ABC-1 Zz title.md`]);
+        expect(await store.read(`${SUBDIR}/ABC-1 Zz title.md`)).toContain("ABC-1");
         expect(r.failures).toEqual([]);
     });
 
     it("sanitises a summary containing control characters instead of failing on it", async () => {
-        const fake = new FakeJira([issue("TT-1", "Fine")]);
+        const fake = new FakeJira([issue("ABC-1", "Fine")]);
         const sync = new JiraSync(store, fake, makeConfig());
         await sync.reconcile();
 
         // A control character used to build a filename that resolve() rejected,
         // which would have failed this issue on every single run.
-        fake.issues = [issue("TT-2", "Bad\u0000name\u001fhere")];
+        fake.issues = [issue("ABC-2", "Bad\u0000name\u001fhere")];
         const r = await sync.reconcile();
 
         expect(r.failures).toEqual([]);
-        // The stale-removal pass still ran for TT-1.
+        // The stale-removal pass still ran for ABC-1.
         const left = await listNotes();
-        expect(left).toEqual([`${SUBDIR}/TT-2 Badnamehere.md`]);
+        expect(left).toEqual([`${SUBDIR}/ABC-2 Badnamehere.md`]);
     });
 
     it("prunes duplicate notes sharing one Jira key, keeping the first path", async () => {
-        const sync = new JiraSync(store, new FakeJira([issue("TT-1", "First")]), makeConfig());
+        const sync = new JiraSync(store, new FakeJira([issue("ABC-1", "First")]), makeConfig());
         await sync.reconcile();
-        const original = (await store.read(`${SUBDIR}/TT-1 First.md`)) ?? "";
-        await store.write(`${SUBDIR}/zz copy of TT-1.md`, original);
+        const original = (await store.read(`${SUBDIR}/ABC-1 First.md`)) ?? "";
+        await store.write(`${SUBDIR}/zz copy of ABC-1.md`, original);
 
         const r = await sync.reconcile();
         expect(r.deduped).toBe(1);
-        expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 First.md`]);
+        expect(await listNotes()).toEqual([`${SUBDIR}/ABC-1 First.md`]);
     });
 
 });
@@ -234,11 +234,11 @@ describe("status mapping", () => {
         const config = { ...makeConfig(), statusMap, defaultStatus };
         const sync = new JiraSync(
             store,
-            new FakeJira([issue("TT-1", "Thing", jiraStatus)]),
+            new FakeJira([issue("ABC-1", "Thing", jiraStatus)]),
             config,
         );
         await sync.reconcile();
-        return (await store.read(`${SUBDIR}/TT-1 Thing.md`)) ?? "";
+        return (await store.read(`${SUBDIR}/ABC-1 Thing.md`)) ?? "";
     }
 
     it("maps each Jira status to its configured TaskNotes status", async () => {

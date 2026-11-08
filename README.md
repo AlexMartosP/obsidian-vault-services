@@ -72,10 +72,12 @@ Changing the file takes effect on restart: `docker compose restart vault-service
 A note is a pointer, not a copy. The entire body is one line:
 
 ```markdown
-[TT-4714: BE: Say in the home timeline when Smart alarm armed or disarmed](https://minuthq.atlassian.net/browse/TT-4714)
+[ABC-123: Short summary of the work item](https://your-domain.atlassian.net/browse/ABC-123)
 ```
 
 Title and link, nothing else. Everything real lives in Jira.
+
+`jira.baseUrl` has no default, since a Jira host is deployment specific and guessing one would turn a missing setting into confusing 404s instead of a clear startup error.
 
 **The JQL is the only thing that decides what exists.** Set `jira.jql` in the config file:
 
@@ -88,9 +90,9 @@ Title and link, nothing else. Everything real lives in Jira.
 
 Nothing is archived and no tombstone is left. That is deliberate, since the note held nothing but a link.
 
-Issue types are excluded rather than listed on purpose. The WEB project uses the Swedish subtask type `Deluppgift`, which an explicit `issuetype in (Sub-task, Task, Bug)` list would silently miss.
+Issue types are excluded rather than listed on purpose. A project whose subtask type has been renamed or localised still gets picked up, whereas an explicit `issuetype in (Sub-task, Task, Bug)` list would silently miss it.
 
-Notes land in `jira.targetSubdir` (default `Work/Jira`) carrying `tags: [task]` and `contexts: [Work]`, so they appear in the existing `Work tasks` base alongside hand-written tasks.
+Notes land in `jira.targetSubdir` (default `Work/Jira`) carrying `tags: [task]` and `contexts: [<jira.taskContext>]`, so they show up alongside your hand-written tasks in any TaskNotes view filtered on that tag and context.
 
 ### Status mapping
 
@@ -131,7 +133,7 @@ Because the notes are regenerated from Jira, **edits you make to them do not sur
 
 - **Only notes it owns are ever modified or deleted.** Ownership is `source: jira` inside the frontmatter. A hand-written note, even one that mentions `source: jira` in its body, is left alone.
 - **A Jira failure changes nothing.** Jira is queried first and a failure propagates before any write or delete, so a network blip cannot empty the folder.
-- **An empty result is never trusted on its own.** This one is not theoretical. `POST /rest/api/3/search/jql` answers **HTTP 200 with `{"issues":[]}` when the credentials are wrong, and even when there are none at all**, because `assignee = currentUser()` resolves to nobody and zero matches is a valid answer to a valid query. Verified against `minuthq.atlassian.net`. Taken at face value, an expired API token would read as "nothing is active any more" and delete every synced note. So each reconcile first proves identity via `/rest/api/3/myself`, which *does* return 401, and also refuses if the token belongs to a different account than the configured email. A failure there aborts before the search even runs.
+- **An empty result is never trusted on its own.** This one is not theoretical. `POST /rest/api/3/search/jql` answers **HTTP 200 with `{"issues":[]}` when the credentials are wrong, and even when there are none at all**, because `assignee = currentUser()` resolves to nobody and zero matches is a valid answer to a valid query. Verified against Jira Cloud. Taken at face value, an expired API token would read as "nothing is active any more" and delete every synced note. So each reconcile first proves identity via `/rest/api/3/myself`, which *does* return 401, and also refuses if the token belongs to a different account than the configured email. A failure there aborts before the search even runs.
 - **Idempotent.** A run that finds no changes rewrites no files and does not touch mtimes, which is what stops a write/sync/write echo loop with the bridge.
 - **Atomic writes.** Notes are written to a dot-prefixed temp file and renamed, so the bridge's watcher never sees a half-written note. The sample bridge config ignores those temp names.
 - **Duplicate keys are handled, not assumed away.** If two notes claim one Jira key, the lexicographically first path wins and the rest are pruned with a warning. Pruning happens *before* any writes, and nothing written during a run can be deleted later in that same run. That ordering matters: an earlier version pruned against a snapshot taken before the writes, so a stale duplicate entry could name the path a rename had just written, deleting the only note of a still-active issue while reporting `removed: 0, deduped: 1`. There is a regression test for exactly that.

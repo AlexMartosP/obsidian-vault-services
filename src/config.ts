@@ -156,13 +156,14 @@ function pick(env: Env, key: string, fromFile: string | undefined, fallback: str
 }
 
 /**
- * Default mapping for this Jira's workflow. Every status in the "In Progress"
- * category is listed, so widening the JQL to include Staging or Blocked does
- * something sensible rather than silently collapsing them together.
+ * Mapping for a reasonably common Jira workflow. Several in-flight statuses
+ * are listed, so widening the JQL beyond the obvious two does something
+ * sensible rather than silently collapsing them together.
  *
- * The values are the TaskNotes status ids. A vault whose TaskNotes config only
- * defines none/open/in-progress/done cannot distinguish these, which is why
- * they all point at in-progress until you add statuses of your own.
+ * The values are TaskNotes status ids. A vault whose TaskNotes config defines
+ * only none/open/in-progress/done cannot tell these apart, which is why
+ * several point at in-progress until you add statuses of your own. Override
+ * the whole map in the config file to match your own workflow.
  */
 export const DEFAULT_STATUS_MAP: Record<string, string> = {
     "In Progress": "in-progress",
@@ -176,6 +177,21 @@ export const DEFAULT_STATUS_MAP: Record<string, string> = {
     Done: "done",
     Resolved: "done",
 };
+
+/**
+ * No default: a Jira host is deployment specific, and guessing one would turn a
+ * missing setting into confusing 404s instead of a clear startup error.
+ */
+function requireBaseUrl(env: Env, fromFile: string | undefined): string {
+    const value = read(env, "JIRA_BASE_URL") ?? fromFile;
+    if (value === undefined) {
+        throw new ConfigError(
+            "Jira sync needs a base URL. Set jira.baseUrl in the config file, " +
+                "or JIRA_BASE_URL, for example https://your-domain.atlassian.net",
+        );
+    }
+    return value.replace(/\/+$/, "");
+}
 
 /** A map is awkward in an env var, so it is accepted as a JSON object there. */
 function statusMapFrom(env: Env, fromFile: Record<string, string> | undefined): Record<string, string> {
@@ -275,7 +291,7 @@ export function loadConfig(env: Env = process.env): Config {
     if (credentialsPresent(env, "Jira sync", ["JIRA_EMAIL", "JIRA_API_TOKEN"])) {
         const f = file.jira ?? {};
         jira = {
-            baseUrl: pick(env, "JIRA_BASE_URL", f.baseUrl, "https://minuthq.atlassian.net"),
+            baseUrl: requireBaseUrl(env, f.baseUrl),
             email: must(env, "JIRA_EMAIL"),
             apiToken: must(env, "JIRA_API_TOKEN"),
             jql: pick(env, "JIRA_JQL", f.jql, DEFAULT_JQL),

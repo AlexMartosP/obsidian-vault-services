@@ -39,7 +39,7 @@ export class JiraError extends Error {}
  * `POST /rest/api/3/search/jql` answers HTTP 200 with `{"issues":[]}` when the
  * credentials are wrong, and even when there are no credentials at all:
  * `assignee = currentUser()` resolves to nobody, and zero matches is a valid
- * answer to a valid query. Verified against minuthq.atlassian.net.
+ * answer to a valid query. Verified against Jira Cloud.
  *
  * Taken at face value that empty list means "nothing is active any more",
  * which would delete every synced note the moment an API token expired. So
