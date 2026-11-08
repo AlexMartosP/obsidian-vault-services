@@ -155,7 +155,9 @@ Read-only applies inside the container only; you can still edit the file on the 
 
 livesync-bridge reads its CouchDB credentials and the vault E2EE passphrase from `dat/config.json` and has no environment support of its own. Writing that file by hand would leave your passphrase in plaintext on the host, where it can be copied into a backup or committed by accident.
 
-Instead a short-lived `bridge-config` service renders it from the environment into a **tmpfs** volume before the bridge starts, with mode `600`. The secrets live in the platform's own secret store and in RAM, and are rebuilt on every start. Nothing writes them to the filesystem, and the rendered config is gone on reboot.
+Instead a short-lived `bridge-config` service renders it from the environment into a Docker volume before the bridge starts, and the bridge mounts that read-only. The environment is the source of truth; the rendered file is a derived artifact, rebuilt on every start, living in Docker's volume directory where it is root-only on the host and never anywhere you would commit or back up.
+
+Two things here were wrong first time and are worth not repeating. A tmpfs-backed volume looked ideal, keeping the secrets in RAM, but a local-driver volume with `type: tmpfs` is mounted into each container's own namespace: what the renderer writes is invisible to the bridge, and disappears when the renderer exits. And mode `600` is wrong across two different images, since they need not share a uid and the bridge then cannot read its own config. The file is `644` inside a volume that is root-only on the host, which is where the protection actually comes from.
 
 The same variables feed the service's own CouchDB access for the encrypted backup artifact, so there is one source of truth rather than two files that can drift:
 

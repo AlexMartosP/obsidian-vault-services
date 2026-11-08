@@ -67,12 +67,15 @@ services:
         condition: service_started
 
 volumes:
-  # tmpfs, so the rendered bridge config and its secrets live only in RAM.
-  # Rebuilt from the environment on every start.
+  # Holds the bridge config rendered by bridge-config, mode 600 and
+  # root-owned, rebuilt from the environment on every start.
+  #
+  # Deliberately a normal volume, not tmpfs. A local-driver volume with
+  # type=tmpfs is mounted into each container's own namespace, so what the
+  # renderer writes is invisible to the bridge and vanishes when the renderer
+  # exits. The environment stays the source of truth; only this derived file
+  # touches disk, and never anywhere you would commit or back up.
   bridge_dat:
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
   bridge_state:
   # Only used while VAULT_HOST_PATH is unset. Setting it to an absolute path
   # turns the vault mounts into bind mounts instead, which is worth doing if
