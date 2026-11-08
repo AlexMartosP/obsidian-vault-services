@@ -13,7 +13,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "sync:once": "tsx src/cli/sync-once.ts",
-    "backup:once": "tsx src/cli/backup-once.ts"
+    "backup:once": "tsx src/cli/backup-once.ts",
+    "render:bridge-config": "tsx src/cli/render-bridge-config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1164.0",

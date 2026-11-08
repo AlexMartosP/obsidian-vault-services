@@ -29,8 +29,7 @@ openssl rand -hex 32                                        # ACCESS_KEY
 cp config/vault-service.sample.json config/vault-service.json
 # behaviour: the JQL, where notes live, schedules, bucket, CouchDB location
 
-cp livesync-bridge/dat/config.sample.json livesync-bridge/dat/config.json
-# fill in CouchDB url, database, credentials, and your E2EE passphrase
+# the bridge needs no config file: it is rendered from the environment
 
 docker compose up -d --build
 curl -s localhost:${HOST_PORT:-8181}/health
@@ -137,23 +136,44 @@ A changed restart-only value comes back in `ignored`, and the live config keeps 
 Config lives at **absolute paths outside the repo checkout**, which matters for two reasons. A platform like Coolify runs `docker compose` from a throwaway build directory, so a relative source such as `./config` resolves to a path that does not exist on the host and Docker silently creates an empty directory. And the checkout itself is replaced on every deploy, which would wipe anything you put inside it.
 
 ```sh
-sudo mkdir -p /data/vault-service/config /data/vault-service/livesync-bridge
+sudo mkdir -p /data/vault-service/config
 sudo cp config/vault-service.sample.json /data/vault-service/config/vault-service.json
-sudo cp livesync-bridge/dat/config.sample.json /data/vault-service/livesync-bridge/config.json
-sudo chmod 600 /data/vault-service/config/vault-service.json \
-               /data/vault-service/livesync-bridge/config.json
 ```
+
+That is the only config file on the host, and it holds no secrets, so it does not need locking down.
 
 | Host path | Env var | Mounted at | Read by |
 |---|---|---|---|
 | `/data/vault-service/config` | `CONFIG_DIR` | `/config` read-only | the service, as `/config/vault-service.json` |
-| `/data/vault-service/livesync-bridge` | `BRIDGE_CONFIG_DIR` | `/app/dat` read-only | the bridge, as `/app/dat/config.json` |
+| a tmpfs volume | | `/app/dat` read-only | the bridge, rendered at start, never on disk |
 | a Docker named volume by default | `VAULT_HOST_PATH` | `/vault` and `/app/data/vault` | both, this is the vault itself |
 | `.env` | | not mounted, via `env_file` | compose |
 
-Read-only applies inside the container only; you can still edit the files on the host, which is the whole point.
+Read-only applies inside the container only; you can still edit the file on the host, which is the whole point.
 
-Both config files carry secrets, hence the `chmod 600`. The bridge's holds your CouchDB password **and your vault E2EE passphrase**. They are git ignored; their `*.sample.*` counterparts are tracked.
+### Secrets never land on disk
+
+livesync-bridge reads its CouchDB credentials and the vault E2EE passphrase from `dat/config.json` and has no environment support of its own. Writing that file by hand would leave your passphrase in plaintext on the host, where it can be copied into a backup or committed by accident.
+
+Instead a short-lived `bridge-config` service renders it from the environment into a **tmpfs** volume before the bridge starts, with mode `600`. The secrets live in the platform's own secret store and in RAM, and are rebuilt on every start. Nothing writes them to the filesystem, and the rendered config is gone on reboot.
+
+The same variables feed the service's own CouchDB access for the encrypted backup artifact, so there is one source of truth rather than two files that can drift:
+
+| Variable | Used by |
+|---|---|
+| `COUCHDB_URL`, `COUCHDB_DB` | bridge and service |
+| `COUCHDB_USER`, `COUCHDB_PASSWORD` | bridge and service |
+| `VAULT_E2EE_PASSPHRASE` | bridge only, and it is the secret that matters most |
+| `BRIDGE_BASE_DIR` | bridge, how much of the vault to sync |
+
+A missing or blank value is refused by name rather than rendering an empty password:
+
+```
+bridge config not rendered  error=cannot render the livesync-bridge config,
+these are missing or invalid: VAULT_E2EE_PASSPHRASE
+```
+
+`BRIDGE_BASE_DIR` is the one exception to blank-means-missing, because empty genuinely means "sync the whole vault" there. It defaults to `Work/Jira/` so a wrong config affects one folder rather than everything; both peers are kept in step automatically.
 
 To verify what a running container actually received, rather than what you believe it received:
 

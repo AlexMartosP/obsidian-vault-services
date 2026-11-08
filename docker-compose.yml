@@ -1,10 +1,28 @@
 # No top-level `name:` on purpose. It would set the compose project name, and
 # the project name is what the default network is called (<project>_default).
 # Pinning it here risks landing in a different network than the rest of the
-# stack, which is the opposite of what dropping the custom network was for.
-# Let the platform decide the project name.
+# stack. Let the platform decide.
+#
+# No networks and no extra_hosts either: CouchDB is reached by its public
+# URL, the same one the LiveSync plugin uses, so there is nothing to declare
+# and nothing that can drift when the platform recreates a network.
 
 services:
+  # Renders livesync-bridge's config.json from environment variables, then
+  # exits. The bridge reads credentials only from that file and has no
+  # environment support of its own, so writing it by hand would leave the
+  # CouchDB password and the vault E2EE passphrase in plaintext on the host
+  # filesystem. Rendering into a tmpfs volume keeps them in the platform's
+  # secret store and in RAM, never on disk.
+  bridge-config:
+    build: .
+    image: vault-service:0.1.0
+    env_file: .env
+    command: ["node", "dist/cli/render-bridge-config.js", "/render/config.json"]
+    volumes:
+      - bridge_dat:/render
+    restart: "no"
+
   # Bridges your LiveSync CouchDB to a plain directory. It owns all
   # encryption, path obfuscation, chunking and conflict resolution, so
   # vault-service only ever sees ordinary markdown files.
@@ -13,16 +31,14 @@ services:
     # Pin this once you are happy with it, e.g.
     #   build: https://github.com/vrtmrz/livesync-bridge.git#<commit-sha>
     volumes:
-      # Absolute host path, not ./livesync-bridge/dat. Two reasons: a platform
-      # like Coolify runs compose from a throwaway build directory, so a
-      # relative source resolves somewhere that does not exist on the host and
-      # Docker silently creates an empty directory; and the repo checkout is
-      # replaced on every deploy, which would wipe the config. This path is
-      # outside the checkout and survives.
-      - ${BRIDGE_CONFIG_DIR:-/data/vault-service/livesync-bridge}:/app/dat:ro
+      # Rendered by bridge-config above, never written by hand.
+      - bridge_dat:/app/dat:ro
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
     restart: unless-stopped
+    depends_on:
+      bridge-config:
+        condition: service_completed_successfully
 
   vault-service:
     build: .
@@ -31,24 +47,34 @@ services:
     volumes:
       - ${VAULT_HOST_PATH:-vault_data}:/vault
       # Non-secret behaviour: the JQL, where notes live, schedules. Edit the
-      # file on the host and the service picks it up within CONFIG_POLL_MS, no
-      # redeploy and no restart. Absolute for the same reasons as above.
+      # file on the host and the service picks it up within configPollMs, no
+      # redeploy and no restart. Absolute, because a platform like Coolify
+      # runs compose from a throwaway build directory where a relative source
+      # would resolve to a path that does not exist on the host, and because
+      # the repo checkout is replaced on every deploy.
       - ${CONFIG_DIR:-/data/vault-service/config}:/config:ro
     # Auth is a single access key, so do not expose this publicly. Bound to
     # loopback; put a TLS terminator in front if you need remote access.
     #
     # HOST_PORT is the only one you normally change: it must be free on the
-    # host. PORT is inside the container, where nothing else competes, so it
-    # rarely needs touching. Both come from .env so this mapping and the app
-    # can never disagree.
+    # host. PORT is inside the container, where nothing else competes. Both
+    # come from .env so this mapping and the app cannot disagree.
     ports:
       - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
     restart: unless-stopped
-    depends_on: [livesync-bridge]
+    depends_on:
+      livesync-bridge:
+        condition: service_started
 
 volumes:
-  # Only used when VAULT_HOST_PATH is left at its default. Setting it to an
-  # absolute path turns both mounts above into bind mounts instead, which is
-  # worth doing if you want the plain markdown somewhere you can inspect.
-  vault_data:
+  # tmpfs, so the rendered bridge config and its secrets live only in RAM.
+  # Rebuilt from the environment on every start.
+  bridge_dat:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
   bridge_state:
+  # Only used while VAULT_HOST_PATH is unset. Setting it to an absolute path
+  # turns the vault mounts into bind mounts instead, which is worth doing if
+  # you want the plain markdown somewhere you can inspect.
+  vault_data:
