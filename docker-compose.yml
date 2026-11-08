@@ -22,14 +22,6 @@ services:
       - ${BRIDGE_CONFIG_DIR:-/data/vault-service/livesync-bridge}:/app/dat:ro
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
-    # CouchDB lives in a different Docker network, but is published on the
-    # host, so reach it through the host instead of joining networks.
-    # host-gateway resolves to the bridge gateway (typically 172.17.0.1),
-    # which routes to the host. This only works if CouchDB is published on
-    # 0.0.0.0: a listener bound to the host's 127.0.0.1 is in the host's own
-    # namespace and is not reachable from a container.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   vault-service:
@@ -51,14 +43,6 @@ services:
     # can never disagree.
     ports:
       - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
-    # CouchDB lives in a different Docker network, but is published on the
-    # host, so reach it through the host instead of joining networks.
-    # host-gateway resolves to the bridge gateway (typically 172.17.0.1),
-    # which routes to the host. This only works if CouchDB is published on
-    # 0.0.0.0: a listener bound to the host's 127.0.0.1 is in the host's own
-    # namespace and is not reachable from a container.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     depends_on: [livesync-bridge]
 

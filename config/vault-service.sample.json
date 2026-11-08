@@ -73,8 +73,12 @@
   },
 
   "couchdb": {
-    "//": "Only for the raw encrypted backup artifact. Credentials stay in .env.",
-    "url": "http://host.docker.internal:5984",
+    "//": [
+      "Only for the raw encrypted backup artifact. Credentials stay in .env.",
+      "Use the same URL the LiveSync plugin uses. A public domain needs no",
+      "Docker network setup at all, which is why it is the default here."
+    ],
+    "url": "https://couchdb.example.com",
     "database": "REPLACE_DB"
   }
 }

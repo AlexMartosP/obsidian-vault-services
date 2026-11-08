@@ -65,23 +65,22 @@ CouchDB usually has to be publicly reachable anyway, because the LiveSync plugin
 sudo docker ps --format '{{.Names}}\t{{.Ports}}' | grep -i couch
 ```
 
-**Published straight onto the host** (`0.0.0.0:5984->5984/tcp`). Both services declare `extra_hosts: host.docker.internal:host-gateway`, which resolves to the bridge gateway and routes to the host, so set:
-
-```json
-"url": "http://host.docker.internal:5984"
-```
-
-Note the `0.0.0.0`. A listener bound to the host's `127.0.0.1` sits in the host's own namespace and is unreachable from a container, host-gateway or not.
-
-**Behind a reverse proxy with a domain** (no `5984` in the ports column). There is no port on the host to reach, so use the public URL:
+**Behind a reverse proxy with a domain**, which is the normal case and what this is set up for. Use the public URL, the same one the plugin uses:
 
 ```json
 "url": "https://couchdb.example.com"
 ```
 
-Traffic leaves the host and comes back, which is slightly wasteful but completely robust: it does not care about Docker networks, survives the platform recreating them, and is the same URL your phone uses. TLS is handled by the proxy.
+Traffic leaves the host and comes back, which is mildly wasteful and completely robust: it does not care about Docker networks, survives the platform recreating them, gets TLS from the proxy, and is identical to what your phone already uses. Nothing is declared in compose for this to work.
 
-Either way the compose file needs no change; only `couchdb.url` in the two config files differs.
+**Published straight onto the host** (`0.0.0.0:5984->5984/tcp`) is the alternative. Add to each service:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+then use `http://host.docker.internal:5984`. `host-gateway` resolves to the bridge gateway, which routes to the host. Note the `0.0.0.0`: a listener bound to the host's `127.0.0.1` sits in the host's own namespace and is unreachable from a container, host-gateway or not.
 
 ### If CouchDB were not reachable from outside
 
