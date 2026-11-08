@@ -21,6 +21,11 @@ services:
     command: ["node", "dist/cli/render-bridge-config.js", "/render/config.json"]
     volumes:
       - bridge_dat:/render
+    # Shares vault-service's image, which carries an HTTP healthcheck in its
+    # Dockerfile. There is no server here, so it would report unhealthy for
+    # the whole of this container's short life. Turn it off.
+    healthcheck:
+      disable: true
     restart: "no"
 
   # Bridges your LiveSync CouchDB to a plain directory. It owns all
@@ -35,6 +40,16 @@ services:
       - bridge_dat:/app/dat:ro
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
+    # The bridge exposes no HTTP surface, so this checks the one precondition
+    # that actually went wrong in practice: a missing or empty rendered
+    # config. Without it the bridge starts, finds nothing and quietly syncs
+    # nothing, which looks identical to working.
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /app/dat/config.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     depends_on:
       bridge-config:
@@ -61,10 +76,16 @@ services:
     # come from .env so this mapping and the app cannot disagree.
     ports:
       - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
+    # This service's healthcheck is defined in the Dockerfile, so it applies
+    # to `docker run` and to any platform too, not only to compose. It polls
+    # /health on $PORT inside the container. Deliberately not duplicated here,
+    # since two definitions would drift.
     restart: unless-stopped
     depends_on:
+      # service_healthy, not service_started: a started bridge with no config
+      # is the failure mode worth waiting out.
       livesync-bridge:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   # Holds the bridge config rendered by bridge-config, mode 600 and

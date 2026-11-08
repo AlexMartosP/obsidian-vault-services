@@ -380,6 +380,30 @@ Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`
 }
 ```
 
+## Health and startup order
+
+Three services, each gated on the one before it:
+
+```
+bridge-config  renders the config, exits 0
+      ↓ service_completed_successfully
+livesync-bridge  healthy only once /app/dat/config.json exists and is non-empty
+      ↓ service_healthy
+vault-service  polls /health on its own port
+```
+
+`vault-service`'s healthcheck is declared in the **Dockerfile**, not in compose, so it applies to `docker run` and to any platform as well, not only to a compose deployment. It is deliberately not duplicated in the compose file, since two definitions drift. That does mean `docker compose config` shows no healthcheck for it; `docker inspect` on the image or `docker ps` will.
+
+Two details that came from things going wrong:
+
+`bridge-config` shares `vault-service`'s image and therefore inherited its HTTP healthcheck, which is meaningless for a one-shot renderer with no server. It is explicitly disabled there.
+
+The bridge exposes no HTTP surface, so its healthcheck tests the one precondition that actually failed in practice: a missing or empty rendered config. Without that check the bridge starts, finds nothing, and quietly syncs nothing, which from the outside looks exactly like working. `vault-service` waits for `service_healthy` rather than `service_started` for the same reason.
+
+```sh
+docker ps --format '{{.Names}}\t{{.Status}}'   # look for (healthy) / (unhealthy)
+```
+
 ## Security posture
 
 Authentication is one shared access key, so **do not expose this publicly**. Compose binds it to `127.0.0.1` for that reason. Reach it from another container on the same network, or over a tunnel. Put TLS in front if it must leave the host.
