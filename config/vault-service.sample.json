@@ -74,7 +74,7 @@
 
   "couchdb": {
     "//": "Only for the raw encrypted backup artifact. Credentials stay in .env.",
-    "url": "http://couchdb:5984",
+    "url": "http://host.docker.internal:5984",
     "database": "REPLACE_DB"
   }
 }

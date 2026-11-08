@@ -4,7 +4,7 @@
             "type": "couchdb",
             "name": "couch",
             "group": "vault",
-            "url": "http://couchdb:5984",
+            "url": "http://host.docker.internal:5984",
             "database": "REPLACE_DB",
             "username": "REPLACE_USER",
             "password": "REPLACE_PASSWORD",

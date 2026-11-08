@@ -57,14 +57,50 @@ sudo docker exec <container> node -e "require('dns').lookup('couchdb',(e,a)=>con
 
 `ENOTFOUND` means wrong network; an IP means you can use that hostname.
 
-If CouchDB genuinely lives in a separate project, join its network explicitly instead:
+### Reaching a CouchDB in another network
+
+CouchDB usually has to be publicly reachable anyway, because the LiveSync plugin on phones and laptops connects to it directly. That means it is normally *not* on this stack's network, and there are two shapes it can take. Find out which with:
+
+```sh
+sudo docker ps --format '{{.Names}}\t{{.Ports}}' | grep -i couch
+```
+
+**Published straight onto the host** (`0.0.0.0:5984->5984/tcp`). Both services declare `extra_hosts: host.docker.internal:host-gateway`, which resolves to the bridge gateway and routes to the host, so set:
+
+```json
+"url": "http://host.docker.internal:5984"
+```
+
+Note the `0.0.0.0`. A listener bound to the host's `127.0.0.1` sits in the host's own namespace and is unreachable from a container, host-gateway or not.
+
+**Behind a reverse proxy with a domain** (no `5984` in the ports column). There is no port on the host to reach, so use the public URL:
+
+```json
+"url": "https://couchdb.example.com"
+```
+
+Traffic leaves the host and comes back, which is slightly wasteful but completely robust: it does not care about Docker networks, survives the platform recreating them, and is the same URL your phone uses. TLS is handled by the proxy.
+
+Either way the compose file needs no change; only `couchdb.url` in the two config files differs.
+
+### If CouchDB were not reachable from outside
+
+Then you would join networks instead, in one of two ways.
+
+**Join CouchDB's own network**, which is the targeted option:
 
 ```yaml
 networks:
   default:
     external: true
-    name: <network-name-from-the-inspect-above>
+    name: <name-from-the-inspect-above>
 ```
+
+Only that one network is joined, traffic never leaves Docker, and the hostname is CouchDB's container or service name. The catch is that the name must stay stable; if the platform recreates the network under a new name, this breaks until updated.
+
+**Or put both resources on a shared network.** On Coolify that is the per-server predefined `coolify` network, via the "Connect To Predefined Network" toggle on each resource. Simplest in the UI and survives recreates, but it flattens isolation between every resource that joins, and the hostname becomes the generated container name (`couchdb-<uuid>`) rather than a tidy service name.
+
+A third, worse option exists for completeness: `docker network connect` after deploy. It works immediately and is lost on the next redeploy, so it is only useful for a one-off test.
 
 ### Changing config without redeploying
 
