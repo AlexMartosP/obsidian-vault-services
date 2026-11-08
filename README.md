@@ -206,13 +206,28 @@ if (version === 0 || version === undefined) {
 So if the bridge still reports a mismatch after the key is set, the key itself is wrong for that vault. To settle it rather than guess, recover the authoritative key straight out of the vault:
 
 ```sh
-printf '%s' 'your-passphrase' | npm run id-key -- \
-  ~/vault/.obsidian/plugins/obsidian-livesync/data.json
+npm run id-key -- ~/vault/.obsidian/plugins/obsidian-livesync/data.json
 ```
 
-This decrypts `encryptedIdDerivationKey` locally with the `octagonal-wheels` HKDF primitives the plugin itself uses, and prints the key in both accepted forms. It talks to nothing, and the passphrase is read from stdin or `VAULT_E2EE_PASSPHRASE` rather than argv so it stays out of shell history and `ps`.
+It decrypts `encryptedIdDerivationKey` locally with the same `octagonal-wheels` HKDF primitives the plugin uses, and prints the key in both accepted forms. It talks to nothing.
 
-A wrong passphrase is reported as such rather than yielding a plausible-looking key, and a vault that does not use ID derivation is identified so you know to leave the variable unset.
+Note that it usually needs **no secret from you**, because that field is *not* encrypted with the vault passphrase. LiveSync protects sensitive settings with a separate configuration key selected by `configPassphraseStore`, then appends a constant salt:
+
+| `configPassphraseStore` | Key material |
+|---|---|
+| `""` (the "Default" option) | the literal `"*"` |
+| `LOCALSTORAGE` | a value in device storage |
+| `ASK_AT_LAUNCH` | typed at launch, stored nowhere |
+
+```
+key = <that value> + SALT_OF_PASSPHRASE
+```
+
+So on the default setting the key is a constant inside a public plugin and nothing needs to be supplied. The two custom stores do involve a real secret, and the tool asks for it on stdin or `LIVESYNC_CONFIG_PASSPHRASE`, never argv, so it stays out of shell history and `ps`. It names the setting it wants, since the configuration passphrase is easily confused with the vault passphrase.
+
+A vault that does not use ID derivation is reported as such, so you know to leave the variable unset.
+
+> **Worth knowing, independent of this service:** with `configPassphraseStore` on the default, `encryptedPassphrase` decrypts by exactly the same route, which means anyone holding that `data.json` can read your **vault passphrase** out of it. The default obfuscates these settings rather than protecting them. `data.json` lives under `.obsidian/`, which LiveSync does not sync when `syncInternalFiles` is off, so it is not in CouchDB or in the backups this service makes, but it is on every device with the vault and in any filesystem backup of that folder. `LOCALSTORAGE` and `ASK_AT_LAUNCH` use a real secret.
 
 The value is normalised, validated before the bridge ever sees it, and redacted in logs. It is omitted from the rendered config entirely when unset, since a vault that does not use ID derivation needs no key and an empty one is worse than none. `idDerivationVersion` is deliberately not set here: the bridge selects version 1 itself once a key is present.
 

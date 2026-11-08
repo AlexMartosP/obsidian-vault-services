@@ -11,13 +11,20 @@ import { z } from "zod";
  *   Direct database document IDs do not match the configured ID key.
  *
  * Obsidian stores the key only as `encryptedIdDerivationKey` in the plugin's
- * data.json, encrypted with the vault passphrase, so the recovery code shown
- * in settings is normally the only way to read it. This decrypts it directly,
- * which settles whether a recovery code you have is actually this vault's key
- * rather than one from an older or different vault.
+ * data.json. Note that it is NOT encrypted with the vault passphrase: LiveSync
+ * protects sensitive settings with a separate configuration key, chosen by
+ * `configPassphraseStore`, and then appends a constant salt:
  *
- * Runs locally and talks to nothing. The passphrase is read from stdin or the
- * environment rather than argv, so it does not land in shell history or `ps`.
+ *   ""            -> "*"                              (the "Default" option)
+ *   LOCALSTORAGE  -> deviceValues["ls-setting-passphrase"]
+ *   ASK_AT_LAUNCH -> typed at launch, stored nowhere
+ *
+ *   key = <that value> + SALT_OF_PASSPHRASE
+ *
+ * With the default option the key is therefore a constant in the plugin, so
+ * this needs no secret from you at all. That also means "Default" obfuscates
+ * these settings rather than protecting them: anyone holding the data.json can
+ * read the vault passphrase out of it too.
  *
  *   npm run id-key -- ~/vault/.obsidian/plugins/obsidian-livesync/data.json
  */
@@ -26,25 +33,45 @@ const dataSchema = z.object({
     idDerivationVersion: z.number().optional(),
     idDerivationKey: z.string().optional(),
     encryptedIdDerivationKey: z.string().optional(),
+    configPassphraseStore: z.string().optional(),
 });
+
+/** Appended to the configuration passphrase before use, by the plugin. */
+const SALT_OF_PASSPHRASE = "rHGMPtr6oWw7VSa3W3wpa8fT8U";
+/** What `getPassphrase` resolves to for the "Default" store. */
+const DEFAULT_CONFIG_PASSPHRASE = "*";
 
 function fail(message: string): never {
     process.stderr.write(`${message}\n`);
     process.exit(2);
 }
 
-function readPassphrase(): string {
-    const fromEnv = process.env["VAULT_E2EE_PASSPHRASE"];
+/**
+ * The configuration passphrase, which is not the vault passphrase.
+ *
+ * Only the LOCALSTORAGE and ASK_AT_LAUNCH stores involve a real secret, and
+ * neither is recorded in data.json, so those are read from stdin or the
+ * environment. Never from argv, which `ps` and shell history would expose.
+ */
+function configPassphrase(store: string): string {
+    if (store === "") return DEFAULT_CONFIG_PASSPHRASE;
+
+    const fromEnv = process.env["LIVESYNC_CONFIG_PASSPHRASE"];
     if (fromEnv !== undefined && fromEnv.trim() !== "") return fromEnv;
+    let piped = "";
     try {
-        // Deliberately not argv: that would be visible in `ps` and history.
-        return fs.readFileSync(0, "utf8").trim();
+        piped = fs.readFileSync(0, "utf8").trim();
     } catch {
-        fail(
-            "No passphrase. Pipe it in, or set VAULT_E2EE_PASSPHRASE:\n" +
-                "  printf '%s' 'your-passphrase' | npm run id-key -- <data.json>",
-        );
+        piped = "";
     }
+    if (piped !== "") return piped;
+    fail(
+        `configPassphraseStore is ${JSON.stringify(store)}, so this vault uses a custom ` +
+            "configuration passphrase. That is the one from the plugin's Configuration " +
+            "Encryption settings, not the vault passphrase. Provide it with:\n" +
+            "  printf '%s' '<configuration passphrase>' | npm run id-key -- <data.json>\n" +
+            "or set LIVESYNC_CONFIG_PASSPHRASE.",
+    );
 }
 
 const path = process.argv[2];
@@ -83,14 +110,20 @@ if (!encrypted.startsWith(hkdf.HKDF_SALTED_ENCRYPTED_PREFIX)) {
     );
 }
 
-const passphrase = readPassphrase();
+const store = data.data.configPassphraseStore ?? "";
+const passphrase = configPassphrase(store);
 let decrypted: string;
 try {
-    decrypted = await hkdf.decryptWithEphemeralSalt(encrypted, passphrase);
+    decrypted = await hkdf.decryptWithEphemeralSalt(encrypted, passphrase + SALT_OF_PASSPHRASE);
 } catch {
     fail(
-        "Could not decrypt the key. The passphrase is almost certainly wrong: it must be " +
-            "exactly the one in the LiveSync plugin's settings for this vault.",
+        store === ""
+            ? "Could not decrypt the key even though this vault uses the Default " +
+                  "configuration store, whose key is a constant. The plugin version may have " +
+                  "changed how settings are encrypted."
+            : "Could not decrypt the key. The configuration passphrase appears wrong; it is " +
+                  "the one from Configuration Encryption in the plugin settings, not the " +
+                  "vault passphrase.",
     );
 }
 
