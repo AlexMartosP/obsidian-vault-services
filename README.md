@@ -92,6 +92,39 @@ Issue types are excluded rather than listed on purpose. The WEB project uses the
 
 Notes land in `jira.targetSubdir` (default `Work/Jira`) carrying `tags: [task]` and `contexts: [Work]`, so they appear in the existing `Work tasks` base alongside hand-written tasks.
 
+### Status mapping
+
+Jira statuses are translated to TaskNotes status ids by `jira.statusMap`, looked up case insensitively, with `jira.defaultStatus` for anything absent:
+
+```json
+"statusMap": {
+  "In Progress": "in-progress",
+  "In Review":   "in-progress",
+  "Staging":     "in-progress",
+  "Blocked":     "in-progress",
+  "Done":        "done"
+},
+"defaultStatus": "in-progress"
+```
+
+**Several Jira statuses collapse onto `in-progress` in the shipped default, and that is a limitation of the vault, not a choice.** TaskNotes in this vault defines only `none`, `open`, `in-progress` and `done`:
+
+```
+$ jq '[.customStatuses[].value]' .obsidian/plugins/tasknotes/data.json
+["none","open","in-progress","done"]
+```
+
+There is no `in-review` to map onto. Add one in TaskNotes settings, then set `"In Review": "in-review"` here, and the two group separately in the task list. The service cannot verify the ids exist, because TaskNotes config lives in `.obsidian`, which your LiveSync setup does not sync (`syncInternalFiles` is off). A typo'd status id therefore shows up in Obsidian, not at startup.
+
+**The true Jira status is always preserved** in the note's `jiraStatus` field no matter what the mapping says, so nothing is lost:
+
+```yaml
+status: in-progress          # TaskNotes, from statusMap
+jiraStatus: "In Review"      # what Jira actually says
+```
+
+A Jira status missing from the map is not an error, since that would halt the sync. It logs a warning once per status, which usually means the JQL was widened without updating the map.
+
 Because the notes are regenerated from Jira, **edits you make to them do not survive**. Change the body of a synced note and the next reconcile overwrites it; the folder is owned by the sync. Hand-written notes in the same folder are untouched, as they lack the ownership marker.
 
 ### Guarantees

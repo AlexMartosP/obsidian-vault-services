@@ -31,15 +31,41 @@ type OwnedNote = {
     dateCreated: string | null;
 };
 
-/** Jira status name -> TaskNotes status value. */
-const IN_REVIEW = "In Review";
-
 export class JiraSync {
+    /** Config map with lowercased keys, so lookup tolerates casing drift. */
+    private readonly statusLookup: Map<string, string>;
+    /** Statuses already warned about, so an unmapped one logs once, not per note. */
+    private readonly warnedStatuses = new Set<string>();
+
     constructor(
         private readonly store: VaultStore,
         private readonly client: IssueSource,
         private readonly config: JiraConfig,
-    ) {}
+    ) {
+        this.statusLookup = new Map(
+            Object.entries(config.statusMap).map(([jira, task]) => [jira.toLowerCase(), task]),
+        );
+    }
+
+    /**
+     * Translate a Jira status into a TaskNotes status value.
+     *
+     * An unmapped status is not an error, since that would stop the sync
+     * outright, but it is warned about once: it usually means the JQL was
+     * widened without updating `jira.statusMap`.
+     */
+    private taskStatusFor(jiraStatus: string): string {
+        const mapped = this.statusLookup.get(jiraStatus.toLowerCase());
+        if (mapped !== undefined) return mapped;
+        if (!this.warnedStatuses.has(jiraStatus)) {
+            this.warnedStatuses.add(jiraStatus);
+            log.warn("Jira status is not in statusMap, using defaultStatus", {
+                jiraStatus,
+                defaultStatus: this.config.defaultStatus,
+            });
+        }
+        return this.config.defaultStatus;
+    }
 
     /**
      * Bring the target folder in line with Jira.
@@ -68,7 +94,7 @@ export class JiraSync {
                 jiraStatus: issue.status,
                 issueType: issue.issueType,
                 browseUrl: `${this.config.baseUrl.replace(/\/+$/, "")}/browse/${issue.key}`,
-                taskStatus: issue.status === IN_REVIEW ? this.config.reviewStatus : "in-progress",
+                taskStatus: this.taskStatusFor(issue.status),
                 context: this.config.taskContext,
                 dateCreated: existing?.dateCreated ?? null,
                 now,

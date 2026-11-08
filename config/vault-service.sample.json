@@ -1,4 +1,6 @@
 {
+  "//": "Non-secret behaviour. Secrets live in .env. Keys starting with // are comments.",
+
   "vaultDir": "/vault",
   "server": { "port": 8080 },
 
@@ -6,22 +8,45 @@
     "baseUrl": "https://minuthq.atlassian.net",
 
     "//jql": [
-      "Which work items appear in the vault. This is the only thing that",
-      "decides it: anything the query returns gets a note, anything it stops",
-      "returning has its note deleted on the next reconcile.",
+      "The only thing that decides what exists in the vault. Anything this",
+      "query returns gets a note; anything it stops returning has its note",
+      "deleted on the next reconcile.",
       "Types are excluded rather than listed so the Swedish subtask type",
       "'Deluppgift' in the WEB project is included too."
     ],
     "jql": "assignee = currentUser() AND issuetype not in (Epic, Story) AND status in (\"In Progress\", \"In Review\") ORDER BY updated DESC",
 
-    "//targetSubdir": "Where the notes live, relative to the vault root. This folder is owned by the sync.",
+    "//targetSubdir": "Where notes live, relative to the vault root. Owned by the sync.",
     "targetSubdir": "Work/Jira",
 
-    "//taskContext": "TaskNotes context, this is what the Work tasks base filters on.",
+    "//taskContext": "TaskNotes context. This is what the Work tasks base filters on.",
     "taskContext": "Work",
 
-    "//reviewStatus": "TaskNotes status for Jira 'In Review'. Your TaskNotes config defines only none/open/in-progress/done, so leave this as in-progress until you add an in-review status.",
-    "reviewStatus": "in-progress",
+    "//statusMap": [
+      "Jira status name on the left, TaskNotes status id on the right.",
+      "Looked up case insensitively. Anything absent uses defaultStatus.",
+      "Your TaskNotes config currently defines only none, open, in-progress",
+      "and done, which is why several Jira statuses collapse onto",
+      "in-progress below. Add an 'in-review' status in TaskNotes settings and",
+      "change the mapping here to tell them apart in the task list.",
+      "The true Jira status is always written to the note's jiraStatus field,",
+      "whatever this mapping says."
+    ],
+    "statusMap": {
+      "In Progress": "in-progress",
+      "In Review": "in-progress",
+      "Staging": "in-progress",
+      "Blocked": "in-progress",
+      "To Do": "open",
+      "New": "open",
+      "Refine": "open",
+      "Icebox": "open",
+      "Done": "done",
+      "Resolved": "done"
+    },
+
+    "//defaultStatus": "Used for a Jira status not in statusMap. Logged once as a warning.",
+    "defaultStatus": "in-progress",
 
     "//reconcileCron": "Safety net behind the webhook, because webhooks get dropped.",
     "reconcileCron": "*/20 * * * *",
@@ -39,7 +64,7 @@
   },
 
   "couchdb": {
-    "//": "Only used for the raw encrypted backup artifact. Credentials stay in the environment.",
+    "//": "Only for the raw encrypted backup artifact. Credentials stay in .env.",
     "url": "http://couchdb:5984",
     "database": "REPLACE_DB"
   }

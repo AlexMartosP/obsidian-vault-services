@@ -44,7 +44,8 @@ const fileSchema = z.strictObject({
             jql: z.string().min(1).optional(),
             targetSubdir: z.string().min(1).optional(),
             taskContext: z.string().min(1).optional(),
-            reviewStatus: z.string().min(1).optional(),
+            statusMap: z.record(z.string().min(1), z.string().min(1)).optional(),
+            defaultStatus: z.string().min(1).optional(),
             reconcileCron: cronish.optional(),
             webhookDebounceMs: z.number().int().positive().optional(),
         })
@@ -76,7 +77,12 @@ export type JiraConfig = {
     jql: string;
     targetSubdir: string;
     taskContext: string;
-    reviewStatus: string;
+    /**
+     * Jira status name -> TaskNotes status value. Looked up case insensitively.
+     * Anything not listed falls back to `defaultStatus`.
+     */
+    statusMap: Record<string, string>;
+    defaultStatus: string;
     reconcileCron: string;
     webhookSecret: string | null;
     webhookDebounceMs: number;
@@ -147,6 +153,47 @@ function boolFrom(env: Env, key: string, fromFile: boolean | undefined, fallback
 /** env wins, then the config file, then the built-in default. */
 function pick(env: Env, key: string, fromFile: string | undefined, fallback: string): string {
     return read(env, key) ?? fromFile ?? fallback;
+}
+
+/**
+ * Default mapping for this Jira's workflow. Every status in the "In Progress"
+ * category is listed, so widening the JQL to include Staging or Blocked does
+ * something sensible rather than silently collapsing them together.
+ *
+ * The values are the TaskNotes status ids. A vault whose TaskNotes config only
+ * defines none/open/in-progress/done cannot distinguish these, which is why
+ * they all point at in-progress until you add statuses of your own.
+ */
+export const DEFAULT_STATUS_MAP: Record<string, string> = {
+    "In Progress": "in-progress",
+    "In Review": "in-progress",
+    Staging: "in-progress",
+    Blocked: "in-progress",
+    "To Do": "open",
+    New: "open",
+    Refine: "open",
+    Icebox: "open",
+    Done: "done",
+    Resolved: "done",
+};
+
+/** A map is awkward in an env var, so it is accepted as a JSON object there. */
+function statusMapFrom(env: Env, fromFile: Record<string, string> | undefined): Record<string, string> {
+    const raw = read(env, "JIRA_STATUS_MAP");
+    if (raw !== undefined) {
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(raw);
+        } catch {
+            throw new ConfigError("JIRA_STATUS_MAP must be a JSON object of Jira status to TaskNotes status");
+        }
+        const result = z.record(z.string().min(1), z.string().min(1)).safeParse(parsed);
+        if (!result.success) {
+            throw new ConfigError(`JIRA_STATUS_MAP is invalid: ${result.error.message}`);
+        }
+        return result.data;
+    }
+    return fromFile ?? DEFAULT_STATUS_MAP;
 }
 
 /**
@@ -234,7 +281,8 @@ export function loadConfig(env: Env = process.env): Config {
             jql: pick(env, "JIRA_JQL", f.jql, DEFAULT_JQL),
             targetSubdir: pick(env, "JIRA_TARGET_SUBDIR", f.targetSubdir, "Work/Jira"),
             taskContext: pick(env, "JIRA_TASK_CONTEXT", f.taskContext, "Work"),
-            reviewStatus: pick(env, "JIRA_REVIEW_STATUS", f.reviewStatus, "in-progress"),
+            statusMap: statusMapFrom(env, f.statusMap),
+            defaultStatus: pick(env, "JIRA_DEFAULT_STATUS", f.defaultStatus, "in-progress"),
             reconcileCron: pick(env, "JIRA_RECONCILE_CRON", f.reconcileCron, "*/20 * * * *"),
             webhookSecret: read(env, "JIRA_WEBHOOK_SECRET") ?? null,
             webhookDebounceMs: intFrom(env, "JIRA_WEBHOOK_DEBOUNCE_MS", f.webhookDebounceMs, 2000),

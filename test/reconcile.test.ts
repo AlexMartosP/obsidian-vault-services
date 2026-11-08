@@ -20,7 +20,8 @@ function makeConfig(): JiraConfig {
         jql: "irrelevant",
         targetSubdir: SUBDIR,
         taskContext: "Work",
-        reviewStatus: "in-progress",
+        statusMap: { "In Progress": "in-progress", "In Review": "in-progress" },
+        defaultStatus: "in-progress",
         reconcileCron: "*/20 * * * *",
         webhookSecret: null,
         webhookDebounceMs: 2000,
@@ -182,16 +183,50 @@ describe("reconcile", () => {
         expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 First.md`]);
     });
 
-    it("maps In Review to the configured TaskNotes status", async () => {
-        const config = { ...makeConfig(), reviewStatus: "in-review" };
+});
+
+describe("status mapping", () => {
+    async function bodyFor(
+        statusMap: Record<string, string>,
+        defaultStatus: string,
+        jiraStatus: string,
+    ): Promise<string> {
+        const config = { ...makeConfig(), statusMap, defaultStatus };
         const sync = new JiraSync(
             store,
-            new FakeJira([issue("TT-1", "Reviewing", "In Review")]),
+            new FakeJira([issue("TT-1", "Thing", jiraStatus)]),
             config,
         );
         await sync.reconcile();
-        const body = (await store.read(`${SUBDIR}/TT-1 Reviewing.md`)) ?? "";
-        expect(body).toContain("status: in-review");
+        return (await store.read(`${SUBDIR}/TT-1 Thing.md`)) ?? "";
+    }
+
+    it("maps each Jira status to its configured TaskNotes status", async () => {
+        const map = { "In Progress": "in-progress", "In Review": "in-review", Staging: "done" };
+        expect(await bodyFor(map, "open", "In Review")).toContain("status: in-review");
+    });
+
+    it("keeps the real Jira status in the note regardless of the mapping", async () => {
+        const body = await bodyFor({ "In Review": "in-progress" }, "open", "In Review");
+        expect(body).toContain("status: in-progress");
         expect(body).toContain('jiraStatus: "In Review"');
+    });
+
+    it("falls back to defaultStatus for an unmapped status", async () => {
+        expect(await bodyFor({ "In Progress": "in-progress" }, "open", "Blocked")).toContain(
+            "status: open",
+        );
+    });
+
+    it("looks up case insensitively, so casing drift in Jira does not break it", async () => {
+        expect(await bodyFor({ "in progress": "in-progress" }, "open", "In Progress")).toContain(
+            "status: in-progress",
+        );
+    });
+
+    it("quotes a mapped value safely in the frontmatter", async () => {
+        // A status containing a colon would break unquoted YAML.
+        const body = await bodyFor({ "In Progress": "in-progress" }, "open", 'Odd: "status"');
+        expect(body).toContain('jiraStatus: "Odd: \\"status\\""');
     });
 });
