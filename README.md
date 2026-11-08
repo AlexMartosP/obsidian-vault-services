@@ -432,12 +432,18 @@ docker run --rm -v <project>_vault_data:/v alpine chown -R <uid>:<gid> /v
 Three services, each gated on the one before it:
 
 ```
-bridge-config  renders the config, exits 0
-      ↓ service_completed_successfully
-livesync-bridge  healthy only once /app/dat/config.json exists and is non-empty
-      ↓ service_healthy
-vault-service  polls /health on its own port
+init             renders the config, exits 0
+      ↓ service_completed_successfully, restart: true
+livesync-bridge  healthy only once its config is non-empty AND /app/data/vault is writable
+      ↓ service_healthy, restart: true
+vault-service    polls /health on its own port
 ```
+
+Every edge is `restart: true`, so a dependency being replaced restarts what sits above it rather than leaving it running against state nobody maintains. A redeploy re-runs `init`, which therefore restarts both services behind it.
+
+The bridge's health asserts both of its preconditions, because both have failed in practice: a rendered config that exists and is non-empty, and a vault that is present *and writable by the uid the bridge runs as*. The second is what the root-owned volume broke, and it is the condition `vault-service` genuinely depends on, since it writes the same tree.
+
+What health deliberately does **not** assert is that files have appeared in the vault. On a fresh or empty sync scope there is legitimately nothing to replicate, so gating on content would deadlock the stack instead of protecting it. The strongest honest statement is "the bridge is running, configured, and able to write", which is what it checks.
 
 `vault-service`'s healthcheck is declared in the **Dockerfile**, not in compose, so it applies to `docker run` and to any platform as well, not only to a compose deployment. It is deliberately not duplicated in the compose file, since two definitions drift. That does mean `docker compose config` shows no healthcheck for it; `docker inspect` on the image or `docker ps` will.
 

@@ -47,20 +47,33 @@ services:
       - bridge_dat:/app/dat:ro
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
-    # The bridge exposes no HTTP surface, so this checks the one precondition
-    # that actually went wrong in practice: a missing or empty rendered
-    # config. Without it the bridge starts, finds nothing and quietly syncs
-    # nothing, which looks identical to working.
+    # The bridge exposes no HTTP surface, so health is asserted from its two
+    # preconditions, both of which have failed in practice:
+    #
+    #   1. a rendered config exists and is non-empty, otherwise the bridge
+    #      starts, finds nothing and quietly syncs nothing, which from the
+    #      outside is indistinguishable from working;
+    #   2. the vault is present AND writable by the uid the bridge runs as,
+    #      which is what the root-owned volume broke.
+    #
+    # Deliberately not asserting that files have appeared in the vault. On a
+    # fresh or empty sync scope there is legitimately nothing to write, so
+    # that would deadlock the stack rather than gate it.
     healthcheck:
-      test: ["CMD-SHELL", "test -s /app/dat/config.json"]
-      interval: 30s
+      test:
+        ["CMD-SHELL", "test -s /app/dat/config.json && test -w /app/data/vault"]
+      interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 20s
     restart: unless-stopped
     depends_on:
       init:
+        # restart: true means a re-run of init, which happens on every
+        # redeploy, also restarts this service so it picks up the new config.
         condition: service_completed_successfully
+        restart: true
+        required: true
 
   vault-service:
     build:
@@ -99,10 +112,18 @@ services:
     depends_on:
       init:
         condition: service_completed_successfully
-      # service_healthy, not service_started: a started bridge with no config
-      # is the failure mode worth waiting out.
+        restart: true
+        required: true
+      # service_healthy, not service_started. A started bridge is not a
+      # working one: it may have no config, or no write access to the vault
+      # this service also depends on. restart: true means that if the bridge
+      # is restarted or goes unhealthy and is replaced, this service is
+      # restarted behind it rather than left running against a vault nobody
+      # is replicating.
       livesync-bridge:
         condition: service_healthy
+        restart: true
+        required: true
 
 volumes:
   # Holds the bridge config rendered by bridge-config, mode 600 and
