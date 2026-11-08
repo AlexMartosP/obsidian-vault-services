@@ -1,4 +1,8 @@
-name: vault-stack
+# No top-level `name:` on purpose. It would set the compose project name, and
+# the project name is what the default network is called (<project>_default).
+# Pinning it here risks landing in a different network than the rest of the
+# stack, which is the opposite of what dropping the custom network was for.
+# Let the platform decide the project name.
 
 services:
   # Bridges your LiveSync CouchDB to a plain directory. It owns all
@@ -19,7 +23,6 @@ services:
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
     restart: unless-stopped
-    networks: [vault]
 
   vault-service:
     build: .
@@ -42,7 +45,6 @@ services:
       - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
     restart: unless-stopped
     depends_on: [livesync-bridge]
-    networks: [vault]
 
 volumes:
   # Only used when VAULT_HOST_PATH is left at its default. Setting it to an
@@ -50,12 +52,3 @@ volumes:
   # worth doing if you want the plain markdown somewhere you can inspect.
   vault_data:
   bridge_state:
-
-networks:
-  vault:
-    # Your CouchDB already runs on this host. Either attach it to this network,
-    # or replace the block below with the network it is already on:
-    #   vault:
-    #     external: true
-    #     name: <existing-couchdb-network>
-    driver: bridge

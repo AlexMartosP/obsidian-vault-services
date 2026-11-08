@@ -36,7 +36,35 @@ docker compose up -d --build
 curl -s localhost:${HOST_PORT:-8181}/health
 ```
 
-Your CouchDB already runs on this host. Either attach it to the `vault` network that compose creates, or point the `networks` block in `docker-compose.yml` at the network CouchDB is already on.
+### Networking
+
+This compose file declares **no networks and no project name**, both deliberately. Services land on the compose project's default network, and the project name is left to whatever deploys it.
+
+That matters because Docker's name resolution is per-network, not per-host: two containers can only reach each other by service name if they share a user-defined network, and the default `bridge` network offers no DNS at all. Declaring a custom network here would opt these containers *out* of the network the rest of your stack is on, so the bridge could not reach CouchDB even though both run on the same machine. Pinning the project name would do the same thing indirectly, since the default network is called `<project>_default`.
+
+So: deploy this alongside CouchDB in the same stack and `couchdb.url` can just use the service name. Confirm what actually happened with:
+
+```sh
+sudo docker inspect <container> \
+  --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+```
+
+Run it for both CouchDB and this service. If they share no network name, they cannot talk. To test resolution from inside, the image has Node, so:
+
+```sh
+sudo docker exec <container> node -e "require('dns').lookup('couchdb',(e,a)=>console.log(e?e.code:a))"
+```
+
+`ENOTFOUND` means wrong network; an IP means you can use that hostname.
+
+If CouchDB genuinely lives in a separate project, join its network explicitly instead:
+
+```yaml
+networks:
+  default:
+    external: true
+    name: <network-name-from-the-inspect-above>
+```
 
 ### Changing config without redeploying
 
