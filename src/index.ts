@@ -1,18 +1,16 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { getRequestListener } from "@hono/node-server";
-import cron, { type ScheduledTask } from "node-cron";
+import cron from "node-cron";
 
-import { ConfigError, loadConfig } from "./config.ts";
+import { ConfigError, loadConfig, resolveConfigFilePath } from "./config.ts";
 import { log, describeError } from "./logger.ts";
 import { VaultPaths } from "./vault/paths.ts";
 import { VaultStore } from "./vault/store.ts";
-import { JiraClient } from "./jira/client.ts";
-import { JiraSync } from "./jira/sync.ts";
-import { SyncRunner } from "./jira/runner.ts";
 import { createApi, createWebhookApi } from "./api/routes.ts";
 import { createMcpServer, createMcpTransport } from "./api/mcp.ts";
-import { runBackup } from "./backup/run.ts";
+import { Runtime, type Scheduler } from "./runtime.ts";
+import { ConfigWatcher } from "./config-watch.ts";
 
 function timingSafeEquals(a: string, b: string): boolean {
     const ab = Buffer.from(a);
@@ -54,67 +52,72 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const store = new VaultStore(new VaultPaths(config.vaultDir));
 
-    let syncRunner: SyncRunner | null = null;
-    const scheduled: ScheduledTask[] = [];
+    const scheduler: Scheduler = {
+        validate: (expression) => cron.validate(expression),
+        schedule: (expression, task) => cron.schedule(expression, task),
+    };
+
+    // Validate the startup schedules up front, so a bad expression is a clear
+    // boot failure rather than a feature that silently never runs. Reloads are
+    // more forgiving: a bad cron there is logged and the old one kept.
+    if (config.jira !== null && !cron.validate(config.jira.reconcileCron)) {
+        throw new ConfigError(
+            `jira.reconcileCron is not a valid cron expression: ${config.jira.reconcileCron}`,
+        );
+    }
+    if (config.backup !== null && !cron.validate(config.backup.cron)) {
+        throw new ConfigError(`backup.cron is not a valid cron expression: ${config.backup.cron}`);
+    }
+
+    const runtime = new Runtime(config, store, scheduler);
+    runtime.start();
+
+    const watcher = new ConfigWatcher(
+        resolveConfigFilePath(),
+        runtime,
+        config.configPollMs,
+        () => loadConfig(),
+    );
+    watcher.start();
+
+    log.info("configuration", {
+        configFile: config.configFile,
+        watchingForChanges: true,
+        pollMs: config.configPollMs,
+        jira: config.jira !== null,
+        backup: config.backup !== null,
+    });
 
     if (config.jira !== null) {
-        const jiraConfig = config.jira;
-        const sync = new JiraSync(store, new JiraClient(jiraConfig), jiraConfig);
-        syncRunner = new SyncRunner(sync);
-        const runner = syncRunner;
-
-        if (!cron.validate(jiraConfig.reconcileCron)) {
-            throw new ConfigError(`JIRA_RECONCILE_CRON is not a valid cron expression: ${jiraConfig.reconcileCron}`);
-        }
-        scheduled.push(
-            cron.schedule(jiraConfig.reconcileCron, () => {
-                void runner.run().catch(() => undefined);
-            }),
-        );
         log.info("jira sync enabled", {
-            subdir: jiraConfig.targetSubdir,
-            reconcileCron: jiraConfig.reconcileCron,
-            webhookSecret: jiraConfig.webhookSecret !== null,
+            subdir: config.jira.targetSubdir,
+            reconcileCron: config.jira.reconcileCron,
+            webhookSecret: config.jira.webhookSecret !== null,
         });
-
         // Reconcile once at boot so a restart converges immediately.
-        void runner.run().catch(() => undefined);
+        void runtime.syncRunner?.run().catch(() => undefined);
     } else {
         log.info("jira sync disabled, no JIRA_EMAIL or JIRA_API_TOKEN set");
     }
 
     if (config.backup !== null) {
-        const backupConfig = config.backup;
-        if (!cron.validate(backupConfig.cron)) {
-            throw new ConfigError(`BACKUP_CRON is not a valid cron expression: ${backupConfig.cron}`);
-        }
-        scheduled.push(
-            cron.schedule(backupConfig.cron, () => {
-                void runBackup(store.root, backupConfig).catch((err: unknown) => {
-                    log.error("scheduled backup threw", { error: describeError(err) });
-                });
-            }),
-        );
         log.info("backup enabled", {
-            cron: backupConfig.cron,
-            bucket: backupConfig.bucket,
-            encryptedArtifact: backupConfig.couch !== null,
+            cron: config.backup.cron,
+            bucket: config.backup.bucket,
+            encryptedArtifact: config.backup.couch !== null,
         });
     } else {
-        log.info("backup disabled, no S3_BUCKET set");
+        log.info("backup disabled, no S3 credentials set");
     }
 
-    const api = createApi({ config, store, syncRunner });
+    const api = createApi({ runtime, store, watcher });
     const apiListener = getRequestListener(api.fetch);
 
+    const syncRunner = runtime.syncRunner;
     const webhookListener =
         config.jira !== null && syncRunner !== null
             ? getRequestListener(
-                  createWebhookApi(
-                      config.jira.webhookSecret,
-                      syncRunner,
-                      config.jira.webhookDebounceMs,
-                  ).fetch,
+                  createWebhookApi(runtime, syncRunner).fetch,
               )
             : null;
 
@@ -162,7 +165,7 @@ async function main(): Promise<void> {
 
         // Stateless: a fresh server and transport per request, so concurrent
         // callers cannot collide on JSON-RPC request ids.
-        const mcpServer = createMcpServer(store, syncRunner);
+        const mcpServer = createMcpServer(store, syncRunner, watcher);
         const transport = createMcpTransport();
         res.on("close", () => {
             void transport.close();
@@ -179,8 +182,8 @@ async function main(): Promise<void> {
 
     const shutdown = (signal: string) => {
         log.info("shutting down", { signal });
-        for (const task of scheduled) void task.stop();
-        syncRunner?.stop();
+        watcher.stop();
+        runtime.stop();
         server.close(() => process.exit(0));
         // Do not hang forever on a stuck connection.
         setTimeout(() => process.exit(0), 10_000).unref();

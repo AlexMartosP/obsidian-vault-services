@@ -30,7 +30,11 @@ async function guarded(run: () => Promise<TextResult>): Promise<TextResult> {
     }
 }
 
-export function createMcpServer(store: VaultStore, syncRunner: SyncRunner | null): McpServer {
+export function createMcpServer(
+    store: VaultStore,
+    syncRunner: SyncRunner | null,
+    watcher?: { reload: () => { applied: string[]; ignored: string[]; error: string | null } },
+): McpServer {
     const server = new McpServer({ name: "vault-service", version: "0.1.0" });
 
     server.registerTool(
@@ -146,6 +150,19 @@ export function createMcpServer(store: VaultStore, syncRunner: SyncRunner | null
                 return ok(JSON.stringify(result));
             }),
     );
+
+    if (watcher !== undefined) {
+        server.registerTool(
+            "config_reload",
+            {
+                title: "Reload the service configuration",
+                description:
+                    "Re-read the config file and apply what can be applied without a restart. Reports which settings took effect, which need a restart, and any validation error (in which case the previous config stays live).",
+                inputSchema: {},
+            },
+            () => guarded(async () => ok(JSON.stringify(watcher.reload(), null, 2))),
+        );
+    }
 
     return server;
 }

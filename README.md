@@ -38,24 +38,67 @@ curl -s localhost:${HOST_PORT:-8181}/health
 
 Your CouchDB already runs on this host. Either attach it to the `vault` network that compose creates, or point the `networks` block in `docker-compose.yml` at the network CouchDB is already on.
 
+### Changing config without redeploying
+
+The service re-reads its config file on a timer (`server.configPollMs`, default 10s) and applies what it can to the running process. Edit the file on the host, wait a few seconds, done. No restart, no redeploy.
+
+```sh
+sudo vi /data/vault-service/config/vault-service.json
+curl -s -H "Authorization: Bearer $ACCESS_KEY" localhost:$HOST_PORT/v1/config   # confirm
+```
+
+Impatient, or want the result immediately:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $ACCESS_KEY" localhost:$HOST_PORT/v1/config/reload
+# {"applied":["jira.jql"],"ignored":[],"error":null}
+```
+
+Polling rather than `fs.watch` is deliberate: inotify events do not reliably cross a Docker bind mount, which is exactly how this file is delivered, and editors that save via temp-file-and-rename can drop a watch entirely. One `stat` every ten seconds is dull and dependable.
+
+**A broken edit cannot take the service down.** If the new file does not parse or fails validation, it is rejected, the error is logged and surfaced on `/v1/config`, and the previously loaded config stays live. `POST /v1/config/reload` answers 422 in that case. Fix the file and the next poll recovers.
+
+**Not everything can be hot-swapped**, and the service says so rather than pretending:
+
+| Applies immediately | Needs a restart |
+|---|---|
+| `jira.jql`, `targetSubdir`, `taskContext` | `server.port`, the listener is already bound |
+| `jira.statusMap`, `defaultStatus`, `baseUrl` | `vaultDir`, the store is built from it |
+| `jira.reconcileCron`, `backup.cron` (rescheduled) | whether a feature exists at all, which follows credentials in the environment |
+| `backup.bucket`, `prefix`, `region`, `endpoint` | anything in `.env` |
+
+A changed restart-only value comes back in `ignored`, and the live config keeps reporting the value actually in force. An invalid new cron expression is refused and the previous schedule kept.
+
 ### Where the files live on the host
 
-All three paths are relative to the directory holding `docker-compose.yml`, so they sit next to the checkout:
+Config lives at **absolute paths outside the repo checkout**, which matters for two reasons. A platform like Coolify runs `docker compose` from a throwaway build directory, so a relative source such as `./config` resolves to a path that does not exist on the host and Docker silently creates an empty directory. And the checkout itself is replaced on every deploy, which would wipe anything you put inside it.
 
+```sh
+sudo mkdir -p /data/vault-service/config /data/vault-service/livesync-bridge
+sudo cp config/vault-service.sample.json /data/vault-service/config/vault-service.json
+sudo cp livesync-bridge/dat/config.sample.json /data/vault-service/livesync-bridge/config.json
+sudo chmod 600 /data/vault-service/config/vault-service.json \
+               /data/vault-service/livesync-bridge/config.json
 ```
-<checkout>/
-├── .env                              secrets + HOST_PORT          (git ignored)
-├── config/vault-service.json         JQL, note location, schedules (git ignored)
-└── livesync-bridge/dat/config.json   CouchDB creds + E2EE passphrase (git ignored)
+
+| Host path | Env var | Mounted at | Read by |
+|---|---|---|---|
+| `/data/vault-service/config` | `CONFIG_DIR` | `/config` read-only | the service, as `/config/vault-service.json` |
+| `/data/vault-service/livesync-bridge` | `BRIDGE_CONFIG_DIR` | `/app/dat` read-only | the bridge, as `/app/dat/config.json` |
+| a Docker named volume by default | `VAULT_HOST_PATH` | `/vault` and `/app/data/vault` | both, this is the vault itself |
+| `.env` | | not mounted, via `env_file` | compose |
+
+Read-only applies inside the container only; you can still edit the files on the host, which is the whole point.
+
+Both config files carry secrets, hence the `chmod 600`. The bridge's holds your CouchDB password **and your vault E2EE passphrase**. They are git ignored; their `*.sample.*` counterparts are tracked.
+
+To verify what a running container actually received, rather than what you believe it received:
+
+```sh
+sudo docker inspect <container> --format '{{json .Mounts}}' | python3 -m json.tool
 ```
 
-| Host path | Mounted at | Read by |
-|---|---|---|
-| `./config` | `/config` read-only | the service, as `/config/vault-service.json` |
-| `./livesync-bridge/dat` | `/app/dat` read-only | the bridge |
-| `./.env` | not mounted, loaded via `env_file` | compose, for both containers |
-
-The two config files carry secrets, so `chmod 600` them. They are git ignored, while their `*.sample.*` counterparts are tracked.
+Check `Source` on each entry. Note that `com.docker.compose.project.working_dir` is **not** trustworthy under Coolify: it records the build container's path, typically `/artifacts/<id>`, which does not exist on the host.
 
 **The vault itself is not on a host path.** `vault_data` is a named Docker volume, so the plain markdown lives under Docker's own storage, typically `/var/lib/docker/volumes/vault-stack_vault_data/_data`. If you would rather have it somewhere you choose, so you can inspect or back it up independently, replace the volume with a bind mount in both services:
 
@@ -222,6 +265,8 @@ All `/v1` routes need `Authorization: Bearer $ACCESS_KEY` (or `X-Access-Key`). `
 | GET | `/v1/search?q=&subdir=` | Substring search with line numbers |
 | GET | `/v1/jira/status` | Last run, last error, whether a run is in flight |
 | POST | `/v1/jira/sync` | Reconcile now |
+| GET | `/v1/config` | What is in force right now, secrets omitted, plus watcher state |
+| POST | `/v1/config/reload` | Re-read the config file now; 422 if it is invalid |
 | POST | `/v1/backup/run` | Back up now |
 | POST | `/jira/webhook` | Jira webhook, authenticated by `?secret=` or the `x-webhook-secret` header |
 
@@ -236,7 +281,7 @@ Every caller-supplied path goes through two layers of containment:
 
 Streamable HTTP at `POST /mcp`, same access key. Stateless: a fresh server per request, so concurrent callers cannot collide on JSON-RPC ids.
 
-Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`, `jira_sync`.
+Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`, `jira_sync`, `config_reload`.
 
 ```jsonc
 {

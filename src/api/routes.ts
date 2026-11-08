@@ -3,7 +3,8 @@ import { bodyLimit } from "hono/body-limit";
 import crypto from "node:crypto";
 import { z } from "zod";
 
-import type { Config } from "../config.ts";
+import type { Runtime } from "../runtime.ts";
+import type { ConfigWatcher } from "../config-watch.ts";
 import { describeError, log } from "../logger.ts";
 import { PathOutsideVaultError } from "../vault/paths.ts";
 import type { VaultStore } from "../vault/store.ts";
@@ -11,9 +12,9 @@ import type { SyncRunner } from "../jira/runner.ts";
 import { runBackup } from "../backup/run.ts";
 
 export type Services = {
-    config: Config;
+    runtime: Runtime;
     store: VaultStore;
-    syncRunner: SyncRunner | null;
+    watcher: ConfigWatcher;
 };
 
 /** Constant time comparison, so a wrong key cannot be found byte by byte. */
@@ -44,21 +45,24 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 export function createApi(services: Services): Hono {
     const app = new Hono();
-    const { config, store } = services;
+    const { runtime, store, watcher } = services;
+    // Read through the runtime rather than capturing it: a reload replaces the
+    // live config, and a captured copy would go stale.
+    const config = () => runtime.config;
 
     app.get("/health", (c) =>
         c.json({
             ok: true,
             vault: store.root,
-            jira: config.jira !== null,
-            backup: config.backup !== null,
+            jira: config().jira !== null,
+            backup: config().backup !== null,
         }),
     );
 
     // Everything below requires the access key.
     app.use("/v1/*", async (c, next) => {
         const key = presentedKey(c.req.header("authorization"), c.req.header("x-access-key"));
-        if (key === null || !secretsMatch(key, config.accessKey)) {
+        if (key === null || !secretsMatch(key, config().accessKey)) {
             return c.json({ error: "unauthorized" }, 401);
         }
         await next();
@@ -131,14 +135,23 @@ export function createApi(services: Services): Hono {
     });
 
     app.get("/v1/jira/status", (c) => {
-        if (services.syncRunner === null) return c.json({ enabled: false });
-        return c.json({ enabled: true, ...services.syncRunner.status });
+        const runner = runtime.syncRunner;
+        if (runner === null) return c.json({ enabled: false });
+        const jira = config().jira;
+        return c.json({
+            enabled: true,
+            ...runner.status,
+            // Echo the settings actually in force, so a reload is observable.
+            jql: jira?.jql ?? null,
+            targetSubdir: jira?.targetSubdir ?? null,
+        });
     });
 
     app.post("/v1/jira/sync", async (c) => {
-        if (services.syncRunner === null) return c.json({ error: "jira sync is disabled" }, 409);
+        const runner = runtime.syncRunner;
+        if (runner === null) return c.json({ error: "jira sync is disabled" }, 409);
         try {
-            return c.json(await services.syncRunner.run());
+            return c.json(await runner.run());
         } catch (err) {
             // The vault is untouched on failure, so this is safe to surface as 502.
             return c.json({ error: describeError(err) }, 502);
@@ -146,9 +159,52 @@ export function createApi(services: Services): Hono {
     });
 
     app.post("/v1/backup/run", async (c) => {
-        if (config.backup === null) return c.json({ error: "backup is disabled" }, 409);
-        const report = await runBackup(store.root, config.backup);
+        const backup = config().backup;
+        if (backup === null) return c.json({ error: "backup is disabled" }, 409);
+        const report = await runBackup(store.root, backup);
         return c.json(report, report.failures.length > 0 ? 207 : 200);
+    });
+
+    /** What is actually in force right now, secrets omitted. */
+    app.get("/v1/config", (c) => {
+        const live = config();
+        return c.json({
+            watcher: watcher.status,
+            vaultDir: live.vaultDir,
+            port: live.port,
+            jira:
+                live.jira === null
+                    ? null
+                    : {
+                          baseUrl: live.jira.baseUrl,
+                          jql: live.jira.jql,
+                          targetSubdir: live.jira.targetSubdir,
+                          taskContext: live.jira.taskContext,
+                          statusMap: live.jira.statusMap,
+                          defaultStatus: live.jira.defaultStatus,
+                          reconcileCron: live.jira.reconcileCron,
+                          webhookDebounceMs: live.jira.webhookDebounceMs,
+                      },
+            backup:
+                live.backup === null
+                    ? null
+                    : {
+                          cron: live.backup.cron,
+                          bucket: live.backup.bucket,
+                          endpoint: live.backup.endpoint,
+                          region: live.backup.region,
+                          prefix: live.backup.prefix,
+                          encryptedArtifact: live.backup.couch !== null,
+                      },
+        });
+    });
+
+    /** Force a re-read instead of waiting out the poll interval. */
+    app.post("/v1/config/reload", (c) => {
+        const outcome = watcher.reload();
+        // A rejected edit leaves the previous config live, which is a client
+        // error in the file rather than a server fault.
+        return c.json(outcome, outcome.error === null ? 200 : 422);
     });
 
     return app;
@@ -159,13 +215,13 @@ export function createApi(services: Services): Hono {
  * access key, because Jira cannot be told to send an arbitrary header value
  * securely. Mounted separately so it is never behind the access key check.
  */
-export function createWebhookApi(
-    secret: string | null,
-    runner: SyncRunner,
-    debounceMs: number,
-): Hono {
+export function createWebhookApi(runtime: Runtime, runner: SyncRunner): Hono {
     const app = new Hono();
     app.post("/jira/webhook", async (c) => {
+        // Read per request so a reloaded secret or debounce takes effect.
+        const jira = runtime.config.jira;
+        const secret = jira?.webhookSecret ?? null;
+        const debounceMs = jira?.webhookDebounceMs ?? 2000;
         if (secret !== null) {
             // Named plainly: this is the shared secret itself, not an HMAC
             // signature over the payload. x-hub-signature would have implied

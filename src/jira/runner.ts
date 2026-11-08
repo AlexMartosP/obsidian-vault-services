@@ -18,7 +18,13 @@ export class SyncRunner {
     private lastError: string | null = null;
     private lastRunAt: string | null = null;
 
-    constructor(private readonly sync: JiraSync) {}
+    /**
+     * Takes a getter rather than the sync itself, so a config reload can swap
+     * the underlying JiraSync without the runner losing its status or its
+     * pending debounce. Resolved per run, and runs are serialised, so a swap
+     * can never land mid-reconcile.
+     */
+    constructor(private readonly getSync: () => JiraSync | null) {}
 
     get status(): {
         running: boolean;
@@ -56,7 +62,9 @@ export class SyncRunner {
     private async execute(): Promise<ReconcileResult> {
         const started = Date.now();
         try {
-            const result = await this.sync.reconcile();
+            const sync = this.getSync();
+            if (sync === null) throw new Error("jira sync is disabled");
+            const result = await sync.reconcile();
             this.lastResult = result;
             this.lastError = null;
             this.lastRunAt = new Date().toISOString();

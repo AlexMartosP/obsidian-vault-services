@@ -38,7 +38,13 @@ const cronish = z.string().min(1);
  */
 const fileSchema = z.strictObject({
     vaultDir: z.string().min(1).optional(),
-    server: z.strictObject({ port: z.number().int().positive().optional() }).optional(),
+    server: z
+        .strictObject({
+            port: z.number().int().positive().optional(),
+            /** How often to re-stat the config file, in milliseconds. */
+            configPollMs: z.number().int().min(1000).optional(),
+        })
+        .optional(),
     jira: z
         .strictObject({
             baseUrl: z.string().url().optional(),
@@ -112,6 +118,8 @@ export type BackupConfig = {
 export type Config = {
     configFile: string | null;
     port: number;
+    /** Poll interval for picking up edits to the config file. */
+    configPollMs: number;
     accessKey: string;
     vaultDir: string;
     jira: JiraConfig | null;
@@ -295,9 +303,17 @@ function resolvePort(env: Env, fromFile: number | undefined): number {
     return port;
 }
 
+/**
+ * The path `loadConfig` will read. Exported so the file watcher cannot end up
+ * watching a different file than the loader reads.
+ */
+export function resolveConfigFilePath(env: Env = process.env): string {
+    return read(env, "CONFIG_FILE") ?? DEFAULT_CONFIG_FILE;
+}
+
 export function loadConfig(env: Env = process.env): Config {
     const explicitFile = read(env, "CONFIG_FILE");
-    const configFile = explicitFile ?? DEFAULT_CONFIG_FILE;
+    const configFile = resolveConfigFilePath(env);
     // An explicitly named file must exist; the default one is optional.
     const file = loadFileConfig(configFile, explicitFile !== undefined);
     const usedFile = fs.existsSync(configFile) ? path.resolve(configFile) : null;
@@ -369,6 +385,7 @@ export function loadConfig(env: Env = process.env): Config {
     return {
         configFile: usedFile,
         port: resolvePort(env, file.server?.port),
+        configPollMs: intFrom(env, "CONFIG_POLL_MS", file.server?.configPollMs, 10_000),
         accessKey: must(env, "ACCESS_KEY"),
         vaultDir,
         jira,

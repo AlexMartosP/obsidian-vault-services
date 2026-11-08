@@ -9,8 +9,14 @@ services:
     # Pin this once you are happy with it, e.g.
     #   build: https://github.com/vrtmrz/livesync-bridge.git#<commit-sha>
     volumes:
-      - ./livesync-bridge/dat:/app/dat:ro
-      - vault_data:/app/data/vault
+      # Absolute host path, not ./livesync-bridge/dat. Two reasons: a platform
+      # like Coolify runs compose from a throwaway build directory, so a
+      # relative source resolves somewhere that does not exist on the host and
+      # Docker silently creates an empty directory; and the repo checkout is
+      # replaced on every deploy, which would wipe the config. This path is
+      # outside the checkout and survives.
+      - ${BRIDGE_CONFIG_DIR:-/data/vault-service/livesync-bridge}:/app/dat:ro
+      - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
     restart: unless-stopped
     networks: [vault]
@@ -20,10 +26,11 @@ services:
     image: vault-service:0.1.0
     env_file: .env
     volumes:
-      - vault_data:/vault
-      # Non-secret behaviour: the JQL, where notes live, schedules.
-      # Copy config/vault-service.sample.json to config/vault-service.json.
-      - ./config:/config:ro
+      - ${VAULT_HOST_PATH:-vault_data}:/vault
+      # Non-secret behaviour: the JQL, where notes live, schedules. Edit the
+      # file on the host and the service picks it up within CONFIG_POLL_MS, no
+      # redeploy and no restart. Absolute for the same reasons as above.
+      - ${CONFIG_DIR:-/data/vault-service/config}:/config:ro
     # Auth is a single access key, so do not expose this publicly. Bound to
     # loopback; put a TLS terminator in front if you need remote access.
     #
@@ -38,6 +45,9 @@ services:
     networks: [vault]
 
 volumes:
+  # Only used when VAULT_HOST_PATH is left at its default. Setting it to an
+  # absolute path turns both mounts above into bind mounts instead, which is
+  # worth doing if you want the plain markdown somewhere you can inspect.
   vault_data:
   bridge_state:
 

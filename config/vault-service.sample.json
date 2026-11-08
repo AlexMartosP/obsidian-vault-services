@@ -4,11 +4,13 @@
   "vaultDir": "/vault",
 
   "//server": [
-    "Listening port. Left out on purpose: under Docker set PORT in .env",
-    "instead, so the compose port mapping cannot drift from the app.",
-    "Environment wins over this file, and a mismatch is warned about at",
-    "startup. Useful when running outside a container.",
-    "\"server\": { \"port\": 8080 }"
+    "port: left out on purpose. Under Docker set PORT in .env instead, so the",
+    "compose port mapping cannot drift from the app. Environment wins over",
+    "this file and a mismatch is warned about at startup.",
+    "configPollMs: how often this file is re-read, default 10000. Everything",
+    "under jira and backup below applies without a restart; port and vaultDir",
+    "do not, and a change to those is reported as ignored rather than faked.",
+    "\"server\": { \"port\": 8080, \"configPollMs\": 10000 }"
   ],
 
   "jira": {
