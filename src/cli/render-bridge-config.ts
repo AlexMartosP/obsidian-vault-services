@@ -29,8 +29,19 @@ try {
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(config, null, 2) + "\n", { mode: 0o644 });
     fs.renameSync(tmp, target);
+
+    // Read back before claiming success. The bridge gates on this file
+    // existing and being non-empty, so an init step that exits 0 without
+    // having written it is the worst outcome: the bridge then starts and
+    // silently syncs nothing.
+    const written = fs.statSync(target);
+    if (!written.isFile() || written.size === 0) {
+        throw new BridgeConfigError(`wrote ${target} but it is empty`);
+    }
+
     log.info("rendered livesync-bridge config", {
         target,
+        bytes: written.size,
         config: redactBridgeConfig(config),
     });
 } catch (err) {

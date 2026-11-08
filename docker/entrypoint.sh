@@ -56,8 +56,13 @@ own_if_needed() {
 if [ "$(id -u)" = "0" ]; then
     mkdir -p "$VAULT_DIR"
     own_if_needed "$VAULT_DIR"
-    # The render directory only exists in the init step; ignore it otherwise.
-    [ -d "$RENDER_DIR" ] && own_if_needed "$RENDER_DIR"
+    # The render volume is only mounted in the init step. Ownership matters
+    # there for the same reason as the vault: the renderer runs unprivileged
+    # and a fresh volume is root:root, so without this the bridge config is
+    # never written and the bridge starts with nothing to read.
+    if [ -d "$RENDER_DIR" ]; then
+        own_if_needed "$RENDER_DIR"
+    fi
 
     log info "dropping privileges to $PUID:$PGID"
     exec su-exec "$PUID:$PGID" "$@"
