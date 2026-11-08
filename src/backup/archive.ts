@@ -1,4 +1,5 @@
 import { ZipArchive, type Archiver } from "archiver";
+import { log, describeError } from "../logger.ts";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -10,6 +11,8 @@ export type ArchiveResult = {
     file: string;
     bytes: number;
     entries: number;
+    /** Files that vanished mid-walk and were left out. */
+    skipped: number;
 };
 
 /** Names never worth backing up, including our own atomic-write temp files. */
@@ -25,6 +28,7 @@ async function withZip(
     const zip = new ZipArchive({ zlib: { level: 9 } });
 
     let entries = 0;
+    let skipped = 0;
     zip.on("entry", () => {
         entries++;
     });
@@ -33,8 +37,18 @@ async function withZip(
         out.on("close", () => resolve());
         out.on("error", reject);
         zip.on("error", reject);
-        // A warning such as a vanished file would otherwise be swallowed.
-        zip.on("warning", reject);
+        /**
+         * archiver emits `warning` (not `error`) when lstat fails on a file the
+         * glob already matched, which is exactly the ENOENT race this service
+         * lives with: livesync-bridge, or its own atomic rename during a
+         * concurrent reconcile, can remove a file between match and stat.
+         * Rejecting here would abort the whole backup over one vanished note,
+         * so the file is skipped and counted instead.
+         */
+        zip.on("warning", (err: unknown) => {
+            skipped++;
+            log.warn("skipped a file while archiving", { error: describeError(err) });
+        });
     });
 
     zip.pipe(out);
@@ -43,7 +57,7 @@ async function withZip(
     await finished;
 
     const st = await fsp.stat(file);
-    return { file, bytes: st.size, entries };
+    return { file, bytes: st.size, entries, skipped };
 }
 
 /**
@@ -67,14 +81,25 @@ export function archivePlaintextVault(vaultDir: string, label: string): Promise<
 }
 
 /** Zip a stream of NDJSON lines as a single entry, for the raw CouchDB export. */
-export function archiveNdjson(
+export async function archiveNdjson(
     lines: AsyncIterable<string>,
     label: string,
     entryName = "documents.ndjson",
 ): Promise<ArchiveResult> {
-    return withZip(label, (zip) => {
-        zip.append(Readable.from(lines), { name: entryName });
+    // The whole export is one zip entry, so the entry counter would always say
+    // 1. Count the lines as they stream instead, so `entries` is the document
+    // count and a truncated export is detectable.
+    let documents = 0;
+    async function* counted(): AsyncGenerator<string> {
+        for await (const line of lines) {
+            documents++;
+            yield line;
+        }
+    }
+    const result = await withZip(label, (zip) => {
+        zip.append(Readable.from(counted()), { name: entryName });
     });
+    return { ...result, entries: documents };
 }
 
 export async function discardArchive(result: ArchiveResult): Promise<void> {

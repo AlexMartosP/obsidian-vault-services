@@ -1,5 +1,5 @@
 import type { JiraConfig } from "../config.ts";
-import { log } from "../logger.ts";
+import { log, describeError } from "../logger.ts";
 import { safeFilename } from "../vault/paths.ts";
 import type { VaultStore } from "../vault/store.ts";
 import {
@@ -24,6 +24,8 @@ export type ReconcileResult = {
     removed: number;
     /** Extra notes sharing a Jira key that were pruned. */
     deduped: number;
+    /** Issues that could not be synced this run. Others still were. */
+    failures: { jiraKey: string; error: string }[];
 };
 
 type OwnedNote = {
@@ -84,53 +86,88 @@ export class JiraSync {
         let added = 0;
         let updated = 0;
         let removed = 0;
-
-        for (const [key, issue] of active) {
-            const existing = owned.get(key) ?? null;
-            const desiredPath = this.pathFor(issue);
-            const content = renderJiraNote({
-                key: issue.key,
-                summary: issue.summary,
-                jiraStatus: issue.status,
-                issueType: issue.issueType,
-                browseUrl: `${this.config.baseUrl.replace(/\/+$/, "")}/browse/${issue.key}`,
-                taskStatus: this.taskStatusFor(issue.status),
-                context: this.config.taskContext,
-                dateCreated: existing?.dateCreated ?? null,
-                now,
-            });
-
-            if (existing === null) {
-                await this.store.write(desiredPath, content);
-                added++;
-                continue;
-            }
-
-            if (existing.relPath === desiredPath) {
-                const current = await this.store.read(desiredPath);
-                if (current !== null && sameIgnoringModified(current, content)) continue;
-                await this.store.write(desiredPath, content);
-                updated++;
-                continue;
-            }
-
-            // The summary changed, so the filename moves with it.
-            await this.store.write(desiredPath, content);
-            await this.store.remove(existing.relPath);
-            updated++;
-        }
-
-        for (const [key, note] of owned) {
-            if (active.has(key)) continue;
-            if (await this.store.remove(note.relPath)) removed++;
-        }
-
         let deduped = 0;
+        const failures: { jiraKey: string; error: string }[] = [];
+
+        /**
+         * Paths written during this run. Nothing written here may then be
+         * deleted by a later cleanup step in the same run.
+         *
+         * This guard is the invariant that matters: a cleanup pass works from
+         * a snapshot taken before the writes, so without it a stale entry can
+         * name a path that has since become a live note. That exact case
+         * deleted the only note of a still-active issue.
+         */
+        const writtenThisRun = new Set<string>();
+        const removeUnlessJustWritten = async (relPath: string): Promise<boolean> => {
+            if (writtenThisRun.has(relPath)) {
+                log.debug("skipping removal of a path written in this run", { relPath });
+                return false;
+            }
+            return this.store.remove(relPath);
+        };
+
+        // Prune pre-existing duplicates before any writes, so the rest of the
+        // run sees at most one note per Jira key.
         for (const extra of duplicates) {
             if (await this.store.remove(extra)) deduped++;
         }
 
-        return { active: active.size, added, updated, removed, deduped };
+        for (const [key, issue] of active) {
+            try {
+                const existing = owned.get(key) ?? null;
+                const desiredPath = this.pathFor(issue);
+                const content = renderJiraNote({
+                    key: issue.key,
+                    summary: issue.summary,
+                    jiraStatus: issue.status,
+                    issueType: issue.issueType,
+                    browseUrl: `${this.config.baseUrl.replace(/\/+$/, "")}/browse/${issue.key}`,
+                    taskStatus: this.taskStatusFor(issue.status),
+                    context: this.config.taskContext,
+                    dateCreated: existing?.dateCreated ?? null,
+                    now,
+                });
+
+                if (existing === null) {
+                    await this.store.write(desiredPath, content);
+                    writtenThisRun.add(desiredPath);
+                    added++;
+                    continue;
+                }
+
+                if (existing.relPath === desiredPath) {
+                    const current = await this.store.read(desiredPath);
+                    if (current !== null && sameIgnoringModified(current, content)) continue;
+                    await this.store.write(desiredPath, content);
+                    writtenThisRun.add(desiredPath);
+                    updated++;
+                    continue;
+                }
+
+                // The summary changed, so the filename moves with it. Write
+                // the new name before dropping the old one, so an interruption
+                // leaves a duplicate rather than nothing.
+                await this.store.write(desiredPath, content);
+                writtenThisRun.add(desiredPath);
+                await removeUnlessJustWritten(existing.relPath);
+                updated++;
+            } catch (err) {
+                // One unusable issue must not stop the other issues, nor skip
+                // the removal pass below. The issue stays in `active`, so its
+                // existing note is never treated as stale and deleted.
+                const error = describeError(err);
+                failures.push({ jiraKey: key, error });
+                log.error("could not sync one Jira issue, continuing", { jiraKey: key, error });
+            }
+        }
+
+        for (const [key, note] of owned) {
+            if (active.has(key)) continue;
+            if (await removeUnlessJustWritten(note.relPath)) removed++;
+        }
+
+        return { active: active.size, added, updated, removed, deduped, failures };
     }
 
     private pathFor(issue: JiraIssue): string {

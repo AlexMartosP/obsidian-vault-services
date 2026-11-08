@@ -34,7 +34,11 @@ export class CouchExporter {
         this.dbUrl = `${config.url.replace(/\/+$/, "")}/${encodeURIComponent(config.database)}`;
     }
 
-    /** Document count, used to sanity check an export before it replaces a good one. */
+    /**
+     * Document count as CouchDB reports it, compared against the number of
+     * documents actually streamed so a truncated export is visible rather than
+     * silently uploaded as a good backup.
+     */
     async documentCount(): Promise<number> {
         const body = await this.get(`${this.dbUrl}`);
         const parsed = z.object({ doc_count: z.number() }).safeParse(body);

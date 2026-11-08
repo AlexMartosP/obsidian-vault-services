@@ -8,7 +8,12 @@ export type BackupArtifact = {
     kind: "plaintext" | "encrypted";
     key: string;
     bytes: number;
+    /** Files for the plaintext artifact, documents for the encrypted one. */
     entries: number;
+    /** Files that vanished mid-walk and were left out. */
+    skipped: number;
+    /** Documents CouchDB claimed to hold, for the encrypted artifact only. */
+    expected?: number;
 };
 
 export type BackupReport = {
@@ -50,8 +55,14 @@ export async function runBackup(
                     key: up.key,
                     bytes: up.bytes,
                     entries: archive.entries,
+                    skipped: archive.skipped,
                 });
-                log.info("uploaded plaintext backup", { key, bytes: up.bytes, entries: archive.entries });
+                log.info("uploaded plaintext backup", {
+                    key,
+                    bytes: up.bytes,
+                    entries: archive.entries,
+                    skipped: archive.skipped,
+                });
             } finally {
                 await discardArchive(archive);
             }
@@ -71,6 +82,20 @@ export async function runBackup(
                     `vault-encrypted-${at}`,
                 );
                 try {
+                    // Refuse to upload an export that is obviously truncated.
+                    // Small drift is normal, since documents can change while
+                    // the export streams; nothing at all is not.
+                    if (expected > 0 && archive.entries === 0) {
+                        throw new Error(
+                            `CouchDB reports ${expected} documents but the export produced none`,
+                        );
+                    }
+                    if (archive.entries < expected * 0.99) {
+                        log.warn("encrypted export is smaller than CouchDB reported", {
+                            exported: archive.entries,
+                            expected,
+                        });
+                    }
                     const key = uploader.objectKey(`encrypted/vault-encrypted-${at}.zip`);
                     const up = await uploader.upload(archive.file, key);
                     report.artifacts.push({
@@ -78,11 +103,14 @@ export async function runBackup(
                         key: up.key,
                         bytes: up.bytes,
                         entries: archive.entries,
+                        skipped: archive.skipped,
+                        expected,
                     });
                     log.info("uploaded encrypted backup", {
                         key,
                         bytes: up.bytes,
-                        couchDocCount: expected,
+                        documents: archive.entries,
+                        expected,
                     });
                 } finally {
                     await discardArchive(archive);

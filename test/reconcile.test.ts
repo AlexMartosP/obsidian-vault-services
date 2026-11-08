@@ -172,6 +172,46 @@ describe("reconcile", () => {
         expect(await listNotes()).toEqual(before);
     });
 
+    /**
+     * Regression. The dedup pass used to run after the write loop against a
+     * snapshot taken before it, so a stale duplicate entry could name the very
+     * path the rename had just written, deleting the only note of an issue that
+     * was still active. The result even looked healthy: removed: 0, deduped: 1.
+     */
+    it("keeps the note when a duplicate already occupies the renamed path", async () => {
+        const fake = new FakeJira([issue("TT-1", "Old title")]);
+        const sync = new JiraSync(store, fake, makeConfig());
+        await sync.reconcile();
+        const original = (await store.read(`${SUBDIR}/TT-1 Old title.md`)) ?? "";
+
+        // Sorts after the canonical note, so it is treated as the duplicate,
+        // and sits exactly where the next rename will land.
+        await store.write(`${SUBDIR}/TT-1 Zz title.md`, original);
+
+        fake.issues = [issue("TT-1", "Zz title")];
+        const r = await sync.reconcile();
+
+        expect(await listNotes()).toEqual([`${SUBDIR}/TT-1 Zz title.md`]);
+        expect(await store.read(`${SUBDIR}/TT-1 Zz title.md`)).toContain("TT-1");
+        expect(r.failures).toEqual([]);
+    });
+
+    it("sanitises a summary containing control characters instead of failing on it", async () => {
+        const fake = new FakeJira([issue("TT-1", "Fine")]);
+        const sync = new JiraSync(store, fake, makeConfig());
+        await sync.reconcile();
+
+        // A control character used to build a filename that resolve() rejected,
+        // which would have failed this issue on every single run.
+        fake.issues = [issue("TT-2", "Bad\u0000name\u001fhere")];
+        const r = await sync.reconcile();
+
+        expect(r.failures).toEqual([]);
+        // The stale-removal pass still ran for TT-1.
+        const left = await listNotes();
+        expect(left).toEqual([`${SUBDIR}/TT-2 Badnamehere.md`]);
+    });
+
     it("prunes duplicate notes sharing one Jira key, keeping the first path", async () => {
         const sync = new JiraSync(store, new FakeJira([issue("TT-1", "First")]), makeConfig());
         await sync.reconcile();
@@ -228,5 +268,46 @@ describe("status mapping", () => {
         // A status containing a colon would break unquoted YAML.
         const body = await bodyFor({ "In Progress": "in-progress" }, "open", 'Odd: "status"');
         expect(body).toContain('jiraStatus: "Odd: \\"status\\""');
+    });
+});
+
+describe("symlink containment", () => {
+    it("refuses to read or write through a symlink inside the vault", async () => {
+        const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"));
+        const secret = path.join(outside, "secret.txt");
+        await fs.writeFile(secret, "do not leak", "utf8");
+        await fs.symlink(secret, path.join(vaultDir, "link.md"));
+
+        const paths = new VaultPaths(vaultDir);
+        expect(() => paths.resolve("link.md")).toThrow(PathOutsideVaultError);
+        expect(await store.read("link.md").catch((e: unknown) => e)).toBeInstanceOf(
+            PathOutsideVaultError,
+        );
+        // The file outside the vault must be untouched.
+        expect(await fs.readFile(secret, "utf8")).toBe("do not leak");
+        await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    it("refuses a path under a symlinked directory inside the vault", async () => {
+        const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"));
+        await fs.symlink(outside, path.join(vaultDir, "escape"));
+        const paths = new VaultPaths(vaultDir);
+        expect(() => paths.resolve("escape/new.md")).toThrow(PathOutsideVaultError);
+        await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    it("refuses a dangling symlink, which a write would follow outside", async () => {
+        const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"));
+        await fs.symlink(path.join(outside, "not-created-yet.md"), path.join(vaultDir, "dangle.md"));
+        const paths = new VaultPaths(vaultDir);
+        expect(() => paths.resolve("dangle.md")).toThrow(PathOutsideVaultError);
+        await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    it("still allows ordinary new and existing files", async () => {
+        const paths = new VaultPaths(vaultDir);
+        expect(() => paths.resolve("Work/Jira/brand new note.md")).not.toThrow();
+        await store.write("Work/Jira/real.md", "x");
+        expect(() => paths.resolve("Work/Jira/real.md")).not.toThrow();
     });
 });

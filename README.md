@@ -134,7 +134,9 @@ Because the notes are regenerated from Jira, **edits you make to them do not sur
 - **An empty result is never trusted on its own.** This one is not theoretical. `POST /rest/api/3/search/jql` answers **HTTP 200 with `{"issues":[]}` when the credentials are wrong, and even when there are none at all**, because `assignee = currentUser()` resolves to nobody and zero matches is a valid answer to a valid query. Verified against `minuthq.atlassian.net`. Taken at face value, an expired API token would read as "nothing is active any more" and delete every synced note. So each reconcile first proves identity via `/rest/api/3/myself`, which *does* return 401, and also refuses if the token belongs to a different account than the configured email. A failure there aborts before the search even runs.
 - **Idempotent.** A run that finds no changes rewrites no files and does not touch mtimes, which is what stops a write/sync/write echo loop with the bridge.
 - **Atomic writes.** Notes are written to a dot-prefixed temp file and renamed, so the bridge's watcher never sees a half-written note. The sample bridge config ignores those temp names.
-- **Duplicate keys are handled, not assumed away.** If two notes claim one Jira key, the lexicographically first path wins and the rest are pruned with a warning.
+- **Duplicate keys are handled, not assumed away.** If two notes claim one Jira key, the lexicographically first path wins and the rest are pruned with a warning. Pruning happens *before* any writes, and nothing written during a run can be deleted later in that same run. That ordering matters: an earlier version pruned against a snapshot taken before the writes, so a stale duplicate entry could name the path a rename had just written, deleting the only note of a still-active issue while reporting `removed: 0, deduped: 1`. There is a regression test for exactly that.
+- **One bad issue does not stop the others.** A per-issue failure is collected into `failures` in the result and logged; the remaining issues still sync and the stale-removal pass still runs. A failed issue is never treated as stale, so its note is not deleted.
+- **Summaries are sanitised, not rejected.** Control characters are stripped from filenames. Otherwise an issue whose summary contained one would fail on every single run.
 
 ### Realtime
 
@@ -150,6 +152,10 @@ Point a Jira webhook at `POST /jira/webhook?secret=<JIRA_WEBHOOK_SECRET>` (that 
 |---|---|---|---|
 | Plaintext | `<prefix>/plaintext/vault-plaintext-<ts>.zip` | The vault as readable files | Yes |
 | Encrypted | `<prefix>/encrypted/vault-encrypted-<ts>.zip` | Raw CouchDB docs as NDJSON, still encrypted | No |
+
+In the report, `entries` is the file count for the plaintext artifact and the **document count** for the encrypted one, checked against what CouchDB claims it holds. An export that produces zero documents when CouchDB reports some is refused rather than uploaded as a good backup; a smaller difference is logged, since documents can legitimately change while the export streams.
+
+`skipped` counts files that vanished mid-walk. Under two writers that is expected rather than exceptional: the bridge or a concurrent reconcile can remove a file between the glob matching it and the archiver stat'ing it. Such a file is skipped and counted instead of aborting the whole archive, which is what an earlier version did.
 
 The two are independent on purpose: a CouchDB outage must not cost you the plaintext backup. A partial success is reported as HTTP 207 with the failure listed, rather than looking like a clean run.
 
@@ -172,9 +178,14 @@ All `/v1` routes need `Authorization: Bearer $ACCESS_KEY` (or `X-Access-Key`). `
 | GET | `/v1/jira/status` | Last run, last error, whether a run is in flight |
 | POST | `/v1/jira/sync` | Reconcile now |
 | POST | `/v1/backup/run` | Back up now |
-| POST | `/jira/webhook` | Jira webhook, authenticated by its own secret |
+| POST | `/jira/webhook` | Jira webhook, authenticated by `?secret=` or the `x-webhook-secret` header |
 
-Every caller-supplied path is resolved against the vault root and rejected if it escapes, including `..` traversal, absolute paths and sibling-prefix tricks.
+Every caller-supplied path goes through two layers of containment:
+
+1. **Textual.** Absolute paths, NUL bytes, `..` traversal and sibling-prefix tricks (`/vaultX` passing for `/vault`) are rejected.
+2. **Filesystem.** Symlinks are refused, and the real path of the deepest existing ancestor must still be inside the root. Without this a symlink already sitting in the vault (Obsidian users do symlink attachment folders, and the bridge could introduce one) resolves "inside" textually while `fs.readFile` and `fs.writeFile` follow it straight out. Dangling symlinks are refused too, since a write would create the file at the outside target.
+
+`PUT /v1/note` bodies are capped at 8 MiB, the same ceiling the MCP handler applies, and return 413 above it.
 
 ## MCP
 

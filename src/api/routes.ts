@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import crypto from "node:crypto";
 import { z } from "zod";
 
@@ -33,6 +34,13 @@ const writeBody = z.object({
     path: z.string().min(1),
     content: z.string(),
 });
+
+/**
+ * Same ceiling the MCP handler applies. Without it `c.req.json()` buffers an
+ * unbounded body, so one authenticated caller could exhaust memory and disk
+ * with a single note.
+ */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 export function createApi(services: Services): Hono {
     const app = new Hono();
@@ -79,12 +87,19 @@ export function createApi(services: Services): Hono {
         return c.json({ path: p, content });
     });
 
-    app.put("/v1/note", async (c) => {
-        const parsed = writeBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) return c.json({ error: "expected { path, content }" }, 400);
-        await store.write(parsed.data.path, parsed.data.content);
-        return c.json({ path: parsed.data.path, written: true });
-    });
+    app.put(
+        "/v1/note",
+        bodyLimit({
+            maxSize: MAX_BODY_BYTES,
+            onError: (c) => c.json({ error: "note is too large" }, 413),
+        }),
+        async (c) => {
+            const parsed = writeBody.safeParse(await c.req.json().catch(() => null));
+            if (!parsed.success) return c.json({ error: "expected { path, content }" }, 400);
+            await store.write(parsed.data.path, parsed.data.content);
+            return c.json({ path: parsed.data.path, written: true });
+        },
+    );
 
     app.delete("/v1/note", async (c) => {
         const p = c.req.query("path");
@@ -152,7 +167,10 @@ export function createWebhookApi(
     const app = new Hono();
     app.post("/jira/webhook", async (c) => {
         if (secret !== null) {
-            const presented = c.req.query("secret") ?? c.req.header("x-hub-signature") ?? "";
+            // Named plainly: this is the shared secret itself, not an HMAC
+            // signature over the payload. x-hub-signature would have implied
+            // GitHub-style signing that is not implemented here.
+            const presented = c.req.query("secret") ?? c.req.header("x-webhook-secret") ?? "";
             if (!secretsMatch(presented, secret)) {
                 return c.json({ error: "unauthorized" }, 401);
             }
