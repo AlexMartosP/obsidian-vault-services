@@ -38,6 +38,36 @@ curl -s localhost:${HOST_PORT:-8181}/health
 
 Your CouchDB already runs on this host. Either attach it to the `vault` network that compose creates, or point the `networks` block in `docker-compose.yml` at the network CouchDB is already on.
 
+### Where the files live on the host
+
+All three paths are relative to the directory holding `docker-compose.yml`, so they sit next to the checkout:
+
+```
+<checkout>/
+├── .env                              secrets + HOST_PORT          (git ignored)
+├── config/vault-service.json         JQL, note location, schedules (git ignored)
+└── livesync-bridge/dat/config.json   CouchDB creds + E2EE passphrase (git ignored)
+```
+
+| Host path | Mounted at | Read by |
+|---|---|---|
+| `./config` | `/config` read-only | the service, as `/config/vault-service.json` |
+| `./livesync-bridge/dat` | `/app/dat` read-only | the bridge |
+| `./.env` | not mounted, loaded via `env_file` | compose, for both containers |
+
+The two config files carry secrets, so `chmod 600` them. They are git ignored, while their `*.sample.*` counterparts are tracked.
+
+**The vault itself is not on a host path.** `vault_data` is a named Docker volume, so the plain markdown lives under Docker's own storage, typically `/var/lib/docker/volumes/vault-stack_vault_data/_data`. If you would rather have it somewhere you choose, so you can inspect or back it up independently, replace the volume with a bind mount in both services:
+
+```yaml
+# in livesync-bridge
+- /srv/vault:/app/data/vault
+# in vault-service
+- /srv/vault:/vault
+```
+
+Both containers write to that directory, so if you bind mount it, make sure the uid they run as can write to it.
+
 ### Start scoped, then widen
 
 The sample bridge config deliberately syncs only `Work/Jira/`, via `baseDir` on both peers. Leave it that way until you have watched a full round trip. If the config is wrong, the damage is contained to one folder instead of your whole vault. Widen `baseDir` to `""` on both peers once you trust it.

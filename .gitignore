@@ -1,4 +1,16 @@
 node_modules/
 dist/
-.env
 *.log
+
+# Real configuration. These hold secrets and must never be committed:
+# .env                             access key, Jira token, S3 keys, CouchDB password
+# livesync-bridge/dat/config.json  CouchDB credentials AND the vault E2EE passphrase
+# config/vault-service.json        deployment specific, and names your Jira host
+# The *.sample.* counterparts are tracked on purpose.
+.env
+.env.*
+!.env.example
+config/*.json
+!config/*.sample.json
+livesync-bridge/dat/*.json
+!livesync-bridge/dat/*.sample.json
