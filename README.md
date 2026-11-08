@@ -380,6 +380,53 @@ Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`
 }
 ```
 
+## Volume ownership
+
+The vault volume is written by two containers from two different images, which run as different users:
+
+| Image | User | uid |
+|---|---|---|
+| vault-service (`node:22-alpine`) | `node` | 1000 |
+| livesync-bridge (`denoland/deno`) | `deno` | 1993 |
+
+A fresh named volume is created `root:root`, so by default **neither** can write it, and you get `EACCES: permission denied, mkdir '/vault/Work'`. That is ownership, not the mount: `rw` is already the default, and a read-write mount of a directory you lack permission on still fails. Docker does not remap users by default, so the container's uid is a real uid to the host kernel and is checked normally.
+
+This is solved in the image rather than at runtime. Docker initialises an **empty** named volume from the image directory it is mounted over, copying ownership and mode along with contents, so the Dockerfile creates the mount points with the right owner:
+
+```dockerfile
+ARG VAULT_UID=1993
+RUN mkdir -p /vault /render \
+    && chown "${VAULT_UID}:${VAULT_GID}" /vault \
+    && chown node:node /render
+```
+
+No runtime `chown`, and no container running as root. The `init` service mounts the vault without ever writing to it, purely so that a container from *this* image is the first to mount the volume; running before the bridge makes that ordering deterministic rather than a race. `vault-service` then runs as the same uid, set in compose.
+
+**`VAULT_UID` must match the uid the bridge runs as.** Check it:
+
+```sh
+docker exec <bridge-container> id
+```
+
+If it is not 1993, set `VAULT_UID` and `VAULT_GID` in `.env` and rebuild, since the value is baked at build time.
+
+### The one catch
+
+Seeding only happens while the volume is **empty**. A volume that already exists keeps whatever ownership it has, so this does not repair an existing broken deployment. Remove the volumes once, with no real data in them yet:
+
+```sh
+docker compose down
+docker volume ls | grep -E 'vault_data|bridge_dat'
+docker volume rm <project>_vault_data <project>_bridge_dat
+docker compose up -d --build
+```
+
+Once the vault holds real notes, that is no longer an option. Changing `VAULT_UID` later means a manual `chown -R` inside the volume instead:
+
+```sh
+docker run --rm -v <project>_vault_data:/v alpine chown -R <uid>:<gid> /v
+```
+
 ## Health and startup order
 
 Three services, each gated on the one before it:

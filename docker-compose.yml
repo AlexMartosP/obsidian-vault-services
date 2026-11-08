@@ -8,22 +8,29 @@
 # and nothing that can drift when the platform recreates a network.
 
 services:
-  # Renders livesync-bridge's config.json from environment variables, then
-  # exits. The bridge reads credentials only from that file and has no
-  # environment support of its own, so writing it by hand would leave the
-  # CouchDB password and the vault E2EE passphrase in plaintext on the host
-  # filesystem. Rendering into a tmpfs volume keeps them in the platform's
-  # secret store and in RAM, never on disk.
-  bridge-config:
-    build: .
+  # Renders livesync-bridge's config.json from the environment, then exits.
+  # The bridge reads credentials only from that file and has no environment
+  # support, so writing it by hand would leave the CouchDB password and the
+  # vault E2EE passphrase in plaintext on the host.
+  #
+  # It also mounts the vault, which it never writes to. That is deliberate:
+  # being the first container to mount the volume is what makes Docker seed
+  # the volume's ownership from this image, where /vault is owned by
+  # VAULT_UID. Running before the bridge makes that order deterministic.
+  init:
+    build:
+      context: .
+      args:
+        VAULT_UID: ${VAULT_UID:-1993}
+        VAULT_GID: ${VAULT_GID:-1993}
     image: vault-service:0.1.0
     env_file: .env
     command: ["node", "dist/cli/render-bridge-config.js", "/render/config.json"]
     volumes:
       - bridge_dat:/render
-    # Shares vault-service's image, which carries an HTTP healthcheck in its
-    # Dockerfile. There is no server here, so it would report unhealthy for
-    # the whole of this container's short life. Turn it off.
+      - ${VAULT_HOST_PATH:-vault_data}:/vault
+    # Shares vault-service's image, which carries an HTTP healthcheck. There
+    # is no server here, so it would report unhealthy for its whole life.
     healthcheck:
       disable: true
     restart: "no"
@@ -52,11 +59,15 @@ services:
       start_period: 10s
     restart: unless-stopped
     depends_on:
-      bridge-config:
+      init:
         condition: service_completed_successfully
 
   vault-service:
-    build: .
+    build:
+      context: .
+      args:
+        VAULT_UID: ${VAULT_UID:-1993}
+        VAULT_GID: ${VAULT_GID:-1993}
     image: vault-service:0.1.0
     env_file: .env
     volumes:
@@ -80,8 +91,14 @@ services:
     # to `docker run` and to any platform too, not only to compose. It polls
     # /health on $PORT inside the container. Deliberately not duplicated here,
     # since two definitions would drift.
+    # Same uid as the bridge, so both can write the shared vault, and the
+    # same uid /vault is owned by in the image. The image's own `node` user
+    # (uid 1000) would not match.
+    user: "${VAULT_UID:-1993}:${VAULT_GID:-1993}"
     restart: unless-stopped
     depends_on:
+      init:
+        condition: service_completed_successfully
       # service_healthy, not service_started: a started bridge with no config
       # is the failure mode worth waiting out.
       livesync-bridge:
