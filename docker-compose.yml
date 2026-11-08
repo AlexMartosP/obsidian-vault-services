@@ -14,15 +14,11 @@ services:
   # vault E2EE passphrase in plaintext on the host.
   #
   # It also mounts the vault, which it never writes to. That is deliberate:
-  # being the first container to mount the volume is what makes Docker seed
-  # the volume's ownership from this image, where /vault is owned by
-  # VAULT_UID. Running before the bridge makes that order deterministic.
+  # its entrypoint runs as root and takes ownership of the vault for
+  # PUID:PGID, and running before the bridge means the vault is already
+  # writable by the time the bridge needs it.
   init:
-    build:
-      context: .
-      args:
-        VAULT_UID: ${VAULT_UID:-1993}
-        VAULT_GID: ${VAULT_GID:-1993}
+    build: .
     image: vault-service:0.1.0
     env_file: .env
     command: ["node", "dist/cli/render-bridge-config.js", "/render/config.json"]
@@ -76,11 +72,7 @@ services:
         required: true
 
   vault-service:
-    build:
-      context: .
-      args:
-        VAULT_UID: ${VAULT_UID:-1993}
-        VAULT_GID: ${VAULT_GID:-1993}
+    build: .
     image: vault-service:0.1.0
     env_file: .env
     volumes:
@@ -104,10 +96,6 @@ services:
     # to `docker run` and to any platform too, not only to compose. It polls
     # /health on $PORT inside the container. Deliberately not duplicated here,
     # since two definitions would drift.
-    # Same uid as the bridge, so both can write the shared vault, and the
-    # same uid /vault is owned by in the image. The image's own `node` user
-    # (uid 1000) would not match.
-    user: "${VAULT_UID:-1993}:${VAULT_GID:-1993}"
     restart: unless-stopped
     depends_on:
       init:

@@ -382,50 +382,56 @@ Tools: `vault_list`, `vault_read`, `vault_write`, `vault_delete`, `vault_search`
 
 ## Volume ownership
 
-The vault volume is written by two containers from two different images, which run as different users:
+The vault is written by two containers from two different images, which run as different users:
 
 | Image | User | uid |
 |---|---|---|
 | vault-service (`node:22-alpine`) | `node` | 1000 |
 | livesync-bridge (`denoland/deno`) | `deno` | 1993 |
 
-A fresh named volume is created `root:root`, so by default **neither** can write it, and you get `EACCES: permission denied, mkdir '/vault/Work'`. That is ownership, not the mount: `rw` is already the default, and a read-write mount of a directory you lack permission on still fails. Docker does not remap users by default, so the container's uid is a real uid to the host kernel and is checked normally.
+Ownership has to be reconciled, and none of the obvious places can do it:
 
-This is solved in the image rather than at runtime. Docker initialises an **empty** named volume from the image directory it is mounted over, copying ownership and mode along with contents, so the Dockerfile creates the mount points with the right owner:
+- A **fresh named volume** is created `root:root`, so neither user can write it. This shows up as `EACCES: permission denied, mkdir '/vault/Work'`.
+- An **existing volume** keeps whatever ownership it already had, forever.
+- A **bind mount** arrives with the host's ownership and is never touched by Docker.
+- The **image** can only help in one narrow case: Docker seeds ownership from the image directory when a named volume is *empty*. That covers neither bind mounts nor any existing deployment.
 
-```dockerfile
-ARG VAULT_UID=1993
-RUN mkdir -p /vault /render \
-    && chown "${VAULT_UID}:${VAULT_GID}" /vault \
-    && chown node:node /render
+Note this is ownership, not the mount. `rw` is already the default, and a read-write mount of a directory you lack permission on still fails. Docker does not remap users by default, so the container's numeric uid is checked against the directory exactly as any host process would be.
+
+So it is fixed at runtime. Containers start as **root**, the entrypoint takes ownership of the vault for `PUID:PGID`, then `exec`s the real command as that user via `su-exec`. Root exists only for the few milliseconds that takes.
+
+```
+PUID=1993      # must match the uid livesync-bridge runs as
+PGID=1993
 ```
 
-No runtime `chown`, and no container running as root. The `init` service mounts the vault without ever writing to it, purely so that a container from *this* image is the first to mount the volume; running before the bridge makes that ordering deterministic rather than a race. `vault-service` then runs as the same uid, set in compose.
-
-**`VAULT_UID` must match the uid the bridge runs as.** Check it:
+Check the uid you need with:
 
 ```sh
 docker exec <bridge-container> id
 ```
 
-If it is not 1993, set `VAULT_UID` and `VAULT_GID` in `.env` and rebuild, since the value is baked at build time.
+Changing it later needs only a restart. An existing vault is re-chowned automatically, and the recursive pass only runs when the top-level owner is already wrong, so it is a one-off migration rather than a cost on every start.
 
-### The one catch
+### If your platform forbids root containers
 
-Seeding only happens while the volume is **empty**. A volume that already exists keeps whatever ownership it has, so this does not repair an existing broken deployment. Remove the volumes once, with no real data in them yet:
+Set `user:` on the services in compose. The entrypoint detects that it is already unprivileged, skips the ownership step, and warns plainly if the vault is not writable:
 
-```sh
-docker compose down
-docker volume ls | grep -E 'vault_data|bridge_dat'
-docker volume rm <project>_vault_data <project>_bridge_dat
-docker compose up -d --build
+```
+warn  running as 1000:1000 and /vault is not writable; set PUID/PGID and allow
+      this container to start as root, or chown the volume to the uid this
+      container runs as
 ```
 
-Once the vault holds real notes, that is no longer an option. Changing `VAULT_UID` later means a manual `chown -R` inside the volume instead:
+You then own the volume yourself, once:
 
 ```sh
-docker run --rm -v <project>_vault_data:/v alpine chown -R <uid>:<gid> /v
+docker run --rm -v <project>_vault_data:/v alpine chown -R 1993:1993 /v
 ```
+
+### macOS is not a valid test for this
+
+On Docker Desktop, containers run inside a Linux VM. Named volumes live in that VM and behave like Linux. **Bind mounts of macOS paths cross a file-sharing layer that fakes ownership**, presenting files as owned by whoever asks, so permission mismatches silently work. Reproduce permission behaviour with named volumes, never with a macOS bind mount.
 
 ## Health and startup order
 

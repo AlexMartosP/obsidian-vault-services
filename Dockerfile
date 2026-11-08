@@ -22,32 +22,25 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 
-# Seed the mount points so the volumes come up owned correctly.
-#
-# Docker initialises an EMPTY named volume from the image directory it is
-# mounted over, copying ownership and mode along with any contents. Creating
-# these here is therefore how the volumes get a usable owner, with no runtime
-# chown and no root container.
-#
-# /vault is shared with livesync-bridge, which runs as its own `deno` user, so
-# it is owned by that uid rather than by `node`. VAULT_UID must match the uid
-# the bridge runs as; check with `docker exec <bridge> id`. vault-service runs
-# under the same uid, set in docker-compose.yml.
-#
-# /render holds only the bridge config this image writes, so `node` owns it.
-# Mode 755 lets the bridge traverse it and read the 644 config as any uid.
-ARG VAULT_UID=1993
-ARG VAULT_GID=1993
-RUN mkdir -p /vault /render \
-    && chown "${VAULT_UID}:${VAULT_GID}" /vault \
-    && chown node:node /render \
-    && chmod 755 /vault /render
+# su-exec drops privileges in the entrypoint; tini reaps zombies and forwards
+# SIGTERM so shutdown is clean.
+RUN apk add --no-cache su-exec
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-USER node
+# Create the mount points so they exist in the image. Ownership is corrected
+# at runtime by the entrypoint rather than baked here: Docker only seeds
+# ownership from the image when a named volume is empty, which covers neither
+# bind mounts nor an existing deployment.
+RUN mkdir -p /vault /render
+
+# Starts as root on purpose, then the entrypoint execs the command as
+# PUID:PGID. Set `user:` in compose to skip that if your platform forbids
+# root; the entrypoint detects it and leaves ownership alone.
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 CMD ["node", "dist/index.js"]
