@@ -57,6 +57,16 @@ const fileSchema = z.strictObject({
             webhookDebounceMs: z.number().int().positive().optional(),
         })
         .optional(),
+    publicClients: z
+        .array(
+            z.strictObject({
+                /** Used to find the key: PUBLIC_KEY_<NAME>, upper-cased. */
+                name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/),
+                /** Vault relative folder this key may see. "" is everything. */
+                subdir: z.string().default(""),
+            }),
+        )
+        .optional(),
     backup: z
         .strictObject({
             cron: cronish.optional(),
@@ -115,10 +125,17 @@ export type BackupConfig = {
     couch: CouchConfig | null;
 };
 
+export type PublicClient = {
+    name: string;
+    /** Vault relative folder this key is confined to. "" is the whole vault. */
+    subdir: string;
+    accessKey: string;
+};
+
 /** A second, deliberately smaller listener intended for a public domain. */
 export type PublicApiConfig = {
     port: number;
-    accessKey: string;
+    clients: PublicClient[];
 };
 
 export type Config = {
@@ -319,6 +336,68 @@ export function resolveConfigFilePath(env: Env = process.env): string {
     return read(env, "CONFIG_FILE") ?? DEFAULT_CONFIG_FILE;
 }
 
+/** PUBLIC_KEY_<NAME>, with anything unusable in a variable name as underscore. */
+function keyVariableFor(name: string): string {
+    return `PUBLIC_KEY_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+/**
+ * Resolve the public listener and its keys.
+ *
+ * Each client's scope comes from the config file, which is not secret and is
+ * hot reloadable, and its key from the environment by name. A client declared
+ * without a key is a startup error naming the variable to set, rather than a
+ * listener that silently cannot be used.
+ *
+ * PUBLIC_ACCESS_KEY is still honoured as a single whole-vault client, so an
+ * existing deployment keeps working, but it is the unscoped case and the
+ * named clients are the point.
+ */
+function publicApiFrom(
+    env: Env,
+    declared: { name: string; subdir: string }[] | undefined,
+): PublicApiConfig | null {
+    const port = read(env, "PUBLIC_PORT");
+    const legacyKey = read(env, "PUBLIC_ACCESS_KEY");
+    const clients: PublicClient[] = [];
+
+    for (const client of declared ?? []) {
+        const variable = keyVariableFor(client.name);
+        const accessKey = read(env, variable);
+        if (accessKey === undefined) {
+            throw new ConfigError(
+                `public client ${JSON.stringify(client.name)} has no key. Set ${variable}, ` +
+                    "or remove it from publicClients in the config file.",
+            );
+        }
+        clients.push({ name: client.name, subdir: client.subdir, accessKey });
+    }
+
+    if (legacyKey !== undefined) {
+        clients.push({ name: "default", subdir: "", accessKey: legacyKey });
+    }
+
+    const duplicates = clients
+        .map((c) => c.accessKey)
+        .filter((k, i, all) => all.indexOf(k) !== i);
+    if (duplicates.length > 0) {
+        throw new ConfigError(
+            "two public clients share an access key, so their scopes would be " +
+                "indistinguishable. Give each client its own key.",
+        );
+    }
+
+    if (port === undefined && clients.length === 0) return null;
+    if (port === undefined || clients.length === 0) {
+        throw new ConfigError(
+            "The public API is partly configured. It needs PUBLIC_PORT and at least one " +
+                "client: either publicClients in the config file with a matching " +
+                "PUBLIC_KEY_<NAME>, or PUBLIC_ACCESS_KEY for unscoped access.",
+        );
+    }
+    return { port: intFrom(env, "PUBLIC_PORT", undefined, 8081), clients };
+}
+
 export function loadConfig(env: Env = process.env): Config {
     const explicitFile = read(env, "CONFIG_FILE");
     const configFile = resolveConfigFilePath(env);
@@ -393,15 +472,7 @@ export function loadConfig(env: Env = process.env): Config {
     return {
         configFile: usedFile,
         port: resolvePort(env, file.server?.port),
-        publicApi: credentialsPresent(env, "Public API", ["PUBLIC_PORT", "PUBLIC_ACCESS_KEY"])
-            ? {
-                  port: intFrom(env, "PUBLIC_PORT", undefined, 8081),
-                  // A separate key on purpose: publishing the vault surface
-                  // must not hand out the key that also drives Jira, backups
-                  // and config reloads.
-                  accessKey: must(env, "PUBLIC_ACCESS_KEY"),
-              }
-            : null,
+        publicApi: publicApiFrom(env, file.publicClients),
         configPollMs: intFrom(env, "CONFIG_POLL_MS", file.server?.configPollMs, 10_000),
         accessKey: must(env, "ACCESS_KEY"),
         vaultDir,

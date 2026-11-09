@@ -62,6 +62,18 @@
     "webhookDebounceMs": 2000
   },
 
+  "//publicClients": [
+    "Keys for the public listener, each confined to one folder. Scopes live",
+    "here because they are not secret and are hot reloadable; the keys",
+    "themselves come from the environment as PUBLIC_KEY_<NAME>, upper-cased",
+    "with anything unusable in a variable name as an underscore.",
+    "An omitted or empty subdir means the whole vault.",
+    "A client declared here with no matching key is a startup error."
+  ],
+  "publicClients": [
+    { "name": "work-agent", "subdir": "Work" }
+  ],
+
   "backup": {
     "cron": "0 3 * * *",
     "bucket": "REPLACE_BUCKET",

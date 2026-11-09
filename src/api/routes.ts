@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import { z } from "zod";
 
 import type { Runtime } from "../runtime.ts";
+import type { PublicClient } from "../config.ts";
+import { ScopedStore, type NoteStore, PathOutsideScopeError } from "../vault/scoped.ts";
 import type { ConfigWatcher } from "../config-watch.ts";
 import { describeError, log } from "../logger.ts";
 import { PathOutsideVaultError } from "../vault/paths.ts";
@@ -19,9 +21,23 @@ export type Services = {
 
 export type PublicServices = {
     store: VaultStore;
-    /** Resolved per request, so a reloaded key takes effect. */
-    accessKey: () => string;
+    /** Resolved per request, so reloaded clients and scopes take effect. */
+    clients: () => PublicClient[];
 };
+
+/** Just enough of the Hono context to find the presented key. */
+export type RequestLike = { req: { header: (name: string) => string | undefined } };
+
+/** Constant time match across every client, returning the one that owns the key. */
+export function matchClient(clients: PublicClient[], presented: string): PublicClient | null {
+    let found: PublicClient | null = null;
+    // Checks every client rather than stopping early, so the time taken does
+    // not reveal which key matched or how many were tried.
+    for (const client of clients) {
+        if (secretsMatch(presented, client.accessKey)) found = client;
+    }
+    return found;
+}
 
 /** Constant time comparison, so a wrong key cannot be found byte by byte. */
 function secretsMatch(a: string, b: string): boolean {
@@ -68,18 +84,18 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
  * separately, which is what lets the public listener be exposed to a domain
  * without also exposing the controls.
  */
-function mountVaultRoutes(app: Hono, store: VaultStore): void {
+function mountVaultRoutes(app: Hono, getStore: (c: RequestLike) => NoteStore): void {
     app.get("/v1/notes", async (c) => {
         const subdir = c.req.query("subdir") ?? "";
         const extParam = c.req.query("ext");
         const ext = extParam === "all" ? null : (extParam ?? ".md");
-        return c.json({ notes: await store.list(subdir, ext) });
+        return c.json({ notes: await getStore(c).list(subdir, ext) });
     });
 
     app.get("/v1/note", async (c) => {
         const p = c.req.query("path");
         if (p === undefined || p === "") return c.json({ error: "path is required" }, 400);
-        const content = await store.read(p);
+        const content = await getStore(c).read(p);
         if (content === null) return c.json({ error: "not found" }, 404);
         return c.json({ path: p, content });
     });
@@ -93,7 +109,7 @@ function mountVaultRoutes(app: Hono, store: VaultStore): void {
         async (c) => {
             const parsed = writeBody.safeParse(await c.req.json().catch(() => null));
             if (!parsed.success) return c.json({ error: "expected { path, content }" }, 400);
-            await store.write(parsed.data.path, parsed.data.content);
+            await getStore(c).write(parsed.data.path, parsed.data.content);
             return c.json({ path: parsed.data.path, written: true });
         },
     );
@@ -101,7 +117,7 @@ function mountVaultRoutes(app: Hono, store: VaultStore): void {
     app.delete("/v1/note", async (c) => {
         const p = c.req.query("path");
         if (p === undefined || p === "") return c.json({ error: "path is required" }, 400);
-        const removed = await store.remove(p);
+        const removed = await getStore(c).remove(p);
         return c.json({ path: p, removed });
     });
 
@@ -111,8 +127,8 @@ function mountVaultRoutes(app: Hono, store: VaultStore): void {
         const subdir = c.req.query("subdir") ?? "";
         const needle = q.toLowerCase();
         const hits: { path: string; line: number; text: string }[] = [];
-        for (const entry of await store.list(subdir)) {
-            const content = await store.read(entry.path);
+        for (const entry of await getStore(c).list(subdir)) {
+            const content = await getStore(c).read(entry.path);
             if (content === null) continue;
             const lines = content.split("\n");
             for (let i = 0; i < lines.length; i++) {
@@ -155,7 +171,7 @@ export function createApi(services: Services): Hono {
         return c.json({ error: "internal error" }, 500);
     });
 
-    mountVaultRoutes(app, store);
+    mountVaultRoutes(app, () => store);
 
     app.get("/v1/jira/status", (c) => {
         const runner = runtime.syncRunner;
@@ -247,21 +263,46 @@ export function createApi(services: Services): Hono {
  */
 export function createPublicApi(services: PublicServices): Hono {
     const app = new Hono();
-    const { store, accessKey } = services;
+    const { store, clients } = services;
+
+    const clientFor = (c: RequestLike): PublicClient | null => {
+        const presented = presentedKey(
+            c.req.header("authorization"),
+            c.req.header("x-access-key"),
+        );
+        return presented === null ? null : matchClient(clients(), presented);
+    };
 
     app.get("/health", (c) => c.json({ ok: true, scope: "vault" }));
 
-    requireAccessKey(app, accessKey);
+    app.use("/v1/*", async (c, next) => {
+        if (clientFor(c) === null) return c.json({ error: "unauthorized" }, 401);
+        await next();
+    });
 
     app.onError((err, c) => {
-        if (err instanceof PathOutsideVaultError) {
+        if (err instanceof PathOutsideVaultError || err instanceof PathOutsideScopeError) {
+            // The same answer for both, so a caller cannot map the vault by
+            // watching which rejections differ.
             return c.json({ error: "invalid path" }, 400);
         }
         log.error("public request failed", { path: c.req.path, error: describeError(err) });
         return c.json({ error: "internal error" }, 500);
     });
 
-    mountVaultRoutes(app, store);
+    /**
+     * Every note route goes through a store confined to the calling client's
+     * subdirectory. Derived from the key on the request rather than stashed on
+     * the context, which keeps this independent of Hono's generics, and means
+     * no route can accidentally reach the unscoped store.
+     */
+    mountVaultRoutes(app, (c) => {
+        const client = clientFor(c);
+        // Unreachable: the middleware above rejects an unmatched key first.
+        if (client === null) throw new PathOutsideScopeError("unauthorised", "");
+        return new ScopedStore(store, client.subdir);
+    });
+
     return app;
 }
 

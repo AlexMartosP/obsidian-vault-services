@@ -218,14 +218,70 @@ describe("public vault API", () => {
         expect(() => loadConfig(baseEnv({ PUBLIC_ACCESS_KEY: "k" }))).toThrow(/partly configured/);
     });
 
-    it("uses a key distinct from the admin key", () => {
+    it("treats PUBLIC_ACCESS_KEY as one unscoped client, distinct from the admin key", () => {
         writeConfig({});
         const config = loadConfig(
             baseEnv({ PUBLIC_PORT: "8081", PUBLIC_ACCESS_KEY: "public-only" }),
         );
-        expect(config.publicApi).toMatchObject({ port: 8081, accessKey: "public-only" });
+        expect(config.publicApi?.port).toBe(8081);
+        expect(config.publicApi?.clients).toEqual([
+            { name: "default", subdir: "", accessKey: "public-only" },
+        ]);
         // The whole point: exposing one must not expose the other.
-        expect(config.publicApi?.accessKey).not.toBe(config.accessKey);
+        expect(config.publicApi?.clients[0]?.accessKey).not.toBe(config.accessKey);
+    });
+
+    it("binds each declared client to its own key and subdirectory", () => {
+        writeConfig({
+            publicClients: [
+                { name: "work-agent", subdir: "Work" },
+                { name: "journal", subdir: "Personal/Journal" },
+            ],
+        });
+        const config = loadConfig(
+            baseEnv({
+                PUBLIC_PORT: "8081",
+                PUBLIC_KEY_WORK_AGENT: "wk",
+                PUBLIC_KEY_JOURNAL: "jr",
+            }),
+        );
+        expect(config.publicApi?.clients).toEqual([
+            { name: "work-agent", subdir: "Work", accessKey: "wk" },
+            { name: "journal", subdir: "Personal/Journal", accessKey: "jr" },
+        ]);
+    });
+
+    it("refuses a declared client with no key, naming the variable to set", () => {
+        writeConfig({ publicClients: [{ name: "work-agent", subdir: "Work" }] });
+        expect(() => loadConfig(baseEnv({ PUBLIC_PORT: "8081" }))).toThrow(
+            /PUBLIC_KEY_WORK_AGENT/,
+        );
+    });
+
+    it("refuses two clients sharing a key, since their scopes would be ambiguous", () => {
+        writeConfig({
+            publicClients: [
+                { name: "a", subdir: "Work" },
+                { name: "b", subdir: "Personal" },
+            ],
+        });
+        expect(() =>
+            loadConfig(baseEnv({ PUBLIC_PORT: "8081", PUBLIC_KEY_A: "same", PUBLIC_KEY_B: "same" })),
+        ).toThrow(/share an access key/);
+    });
+
+    it("defaults an omitted subdir to the whole vault", () => {
+        writeConfig({ publicClients: [{ name: "everything" }] });
+        const config = loadConfig(
+            baseEnv({ PUBLIC_PORT: "8081", PUBLIC_KEY_EVERYTHING: "k" }),
+        );
+        expect(config.publicApi?.clients[0]?.subdir).toBe("");
+    });
+
+    it("refuses a port with no clients, and clients with no port", () => {
+        writeConfig({ publicClients: [{ name: "a", subdir: "Work" }] });
+        expect(() => loadConfig(baseEnv({ PUBLIC_PORT: "8081" }))).toThrow();
+        expect(() => loadConfig(baseEnv({ PUBLIC_KEY_A: "k" }))).toThrow(/partly configured|needs/);
     });
 
     it("rejects a nonsense public port", () => {

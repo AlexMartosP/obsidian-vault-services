@@ -4,7 +4,8 @@ import { z } from "zod";
 
 import { describeError } from "../logger.ts";
 import { PathOutsideVaultError } from "../vault/paths.ts";
-import type { VaultStore } from "../vault/store.ts";
+import type { NoteStore } from "../vault/scoped.ts";
+import { PathOutsideScopeError } from "../vault/scoped.ts";
 import type { SyncRunner } from "../jira/runner.ts";
 
 type TextResult = {
@@ -25,13 +26,17 @@ async function guarded(run: () => Promise<TextResult>): Promise<TextResult> {
     try {
         return await run();
     } catch (err) {
-        if (err instanceof PathOutsideVaultError) return fail("invalid path");
+        if (err instanceof PathOutsideVaultError || err instanceof PathOutsideScopeError) {
+            // Identical for both, so a scoped client cannot probe the vault
+            // layout by comparing error text.
+            return fail("invalid path");
+        }
         return fail(describeError(err));
     }
 }
 
 export function createMcpServer(
-    store: VaultStore,
+    store: NoteStore,
     syncRunner: SyncRunner | null,
     watcher?: { reload: () => { applied: string[]; ignored: string[]; error: string | null } },
 ): McpServer {

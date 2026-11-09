@@ -7,7 +7,8 @@ import { ConfigError, loadConfig, resolveConfigFilePath } from "./config.ts";
 import { log, describeError } from "./logger.ts";
 import { VaultPaths } from "./vault/paths.ts";
 import { VaultStore } from "./vault/store.ts";
-import { createApi, createPublicApi, createWebhookApi } from "./api/routes.ts";
+import { createApi, createPublicApi, createWebhookApi, matchClient } from "./api/routes.ts";
+import { ScopedStore } from "./vault/scoped.ts";
 import { createMcpServer, createMcpTransport } from "./api/mcp.ts";
 import { Runtime, type Scheduler } from "./runtime.ts";
 import { ConfigWatcher } from "./config-watch.ts";
@@ -186,6 +187,43 @@ async function main(): Promise<void> {
         await transport.handleRequest(req, res, body);
     }
 
+    /**
+     * MCP on the public listener. Resolves the client from the key first, so
+     * the tools it registers operate on a store confined to that client's
+     * subdirectory rather than the whole vault.
+     */
+    async function handleScopedMcp(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+    ): Promise<void> {
+        const clients = runtime.config.publicApi?.clients ?? [];
+        const header = req.headers.authorization;
+        const xKey = req.headers["x-access-key"];
+        const presented =
+            typeof header === "string" && header.startsWith("Bearer ")
+                ? header.slice(7).trim()
+                : typeof xKey === "string"
+                  ? xKey.trim()
+                  : "";
+        const client = presented === "" ? null : matchClient(clients, presented);
+        if (client === null) {
+            res.writeHead(401, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "unauthorized" }));
+            return;
+        }
+
+        const scoped = new ScopedStore(store, client.subdir);
+        const mcpServer = createMcpServer(scoped, null);
+        const transport = createMcpTransport();
+        res.on("close", () => {
+            void transport.close();
+            void mcpServer.close();
+        });
+        await mcpServer.connect(transport);
+        const body = req.method === "POST" ? await readBody(req) : undefined;
+        await transport.handleRequest(req, res, body);
+    }
+
     server.listen(config.port, () => {
         log.info("vault-service listening", { port: config.port, vault: store.root });
     });
@@ -201,19 +239,15 @@ async function main(): Promise<void> {
         const publicListener = getRequestListener(
             createPublicApi({
                 store,
-                accessKey: () => runtime.config.publicApi?.accessKey ?? publicApi.accessKey,
+                // Read through the runtime so a reloaded scope applies without
+                // a restart; fall back to the boot value if the group vanishes.
+                clients: () => runtime.config.publicApi?.clients ?? publicApi.clients,
             }).fetch,
         );
         publicServer = http.createServer((req, res) => {
             const url = req.url ?? "/";
             if (url === "/mcp" || url.startsWith("/mcp?") || url.startsWith("/mcp/")) {
-                void handleMcp(
-                    req,
-                    res,
-                    () => runtime.config.publicApi?.accessKey ?? publicApi.accessKey,
-                    // No runner and no watcher: the vault tools and nothing else.
-                    () => createMcpServer(store, null),
-                ).catch((err: unknown) => {
+                void handleScopedMcp(req, res).catch((err: unknown) => {
                     log.error("public mcp request failed", { error: describeError(err) });
                     if (!res.headersSent) {
                         res.writeHead(500, { "content-type": "application/json" });
@@ -227,7 +261,10 @@ async function main(): Promise<void> {
         publicServer.listen(publicApi.port, () => {
             log.info("public vault API listening", {
                 port: publicApi.port,
-                scope: "vault only, separate access key",
+                clients: (runtime.config.publicApi?.clients ?? publicApi.clients).map((c) => ({
+                    name: c.name,
+                    subdir: c.subdir === "" ? "(whole vault)" : c.subdir,
+                })),
             });
         });
     } else {

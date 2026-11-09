@@ -96,8 +96,14 @@ services:
     # Only exposed to the Docker network, not published on the host, so a
     # reverse proxy can route a domain to it while the host gains no new
     # listener. Point your platform's domain at this port.
+    #
+    # Written as a literal rather than ${PUBLIC_PORT}, because platforms parse
+    # this file statically to discover ports and cannot resolve a variable.
+    # Coolify warns "Unrecognized internal port" when it sees one. There is no
+    # reason for the port to vary inside the container anyway; if you do
+    # override PUBLIC_PORT, change this to match.
     expose:
-      - "${PUBLIC_PORT:-8081}"
+      - "8081"
     # This service's healthcheck is defined in the Dockerfile, so it applies
     # to `docker run` and to any platform too, not only to compose. It polls
     # /health on $PORT inside the container. Deliberately not duplicated here,

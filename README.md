@@ -537,12 +537,44 @@ admin   :8080   all of the above, plus /v1/jira/*  /v1/backup/run  /v1/config*
                 /jira/webhook, and the jira_sync and config_reload tools
 ```
 
-To publish it:
+### Scoped keys
+
+The public listener takes any number of keys, each confined to one folder. Scopes are not secret and go in the config file; the keys come from the environment by name.
+
+```json
+"publicClients": [
+  { "name": "work-agent", "subdir": "Work" },
+  { "name": "journal",    "subdir": "Personal/Journal" },
+  { "name": "everything", "subdir": "" }
+]
+```
 
 ```sh
 PUBLIC_PORT=8081
-PUBLIC_ACCESS_KEY=$(openssl rand -hex 32)
+PUBLIC_KEY_WORK_AGENT=$(openssl rand -hex 32)
+PUBLIC_KEY_JOURNAL=$(openssl rand -hex 32)
 ```
+
+The variable is `PUBLIC_KEY_<NAME>`, upper-cased, with anything unusable in a variable name replaced by an underscore. A client declared without a key is a startup error naming the variable, and two clients sharing a key is refused outright, since their scopes would be indistinguishable.
+
+Each key gets a view of the vault rooted at its subdirectory, and **paths cross the boundary scope-relative in both directions**. A key scoped to `Work` asks for `task.md`, not `Work/task.md`, and never learns its prefix. Confinement is enforced on reads, writes, deletes and listings:
+
+```
+work-agent  list                 -> [{"path":"task.md"}]
+work-agent  ../Personal/diary.md -> {"error":"invalid path"}
+work-agent  PUT ../Personal/evil -> {"error":"invalid path"}
+reader      list                 -> [{"path":"idea.md"}]
+```
+
+Traversal, absolute paths and the sibling-prefix case (`Work2` must not pass for `Work`) are all rejected, and the error text is identical to the vault-root rejection so a client cannot map the vault by comparing failures.
+
+`PUBLIC_ACCESS_KEY` still works as a single unscoped client named `default`, for an existing deployment. Prefer named clients.
+
+Since scopes live in the config file, narrowing or widening a key's access is an edit plus a restart, and the key itself never changes.
+
+### Sync the whole vault
+
+Set `BRIDGE_BASE_DIR=` empty so the bridge replicates everything into `/vault`. That is what you want: the backups then cover the whole vault, while exposure is controlled per key rather than by how much is synced. Changing it needs a redeploy, since the renderer reads it at init, and it starts a fresh replication checkpoint.
 
 then point your platform's domain at port `8081` on this service. It is `expose`d to the Docker network rather than published to the host, so the reverse proxy reaches it internally and the host gains no new listener. The admin port stays on loopback and should never get a domain; reach it over SSH:
 
