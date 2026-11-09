@@ -91,7 +91,15 @@ services:
     # host. PORT is inside the container, where nothing else competes. Both
     # come from .env so this mapping and the app cannot disagree.
     ports:
+      # Admin surface: everything, including Jira, backups and config reload.
+      # Loopback only, never a domain.
       - "127.0.0.1:${HOST_PORT:-8181}:${PORT:-8080}"
+    # Public surface: the vault and nothing else, with its own access key.
+    # Only exposed to the Docker network, not published on the host, so a
+    # reverse proxy can route a domain to it while the host gains no new
+    # listener. Point your platform's domain at this port.
+    expose:
+      - "${PUBLIC_PORT:-8081}"
     # This service's healthcheck is defined in the Dockerfile, so it applies
     # to `docker run` and to any platform too, not only to compose. It polls
     # /health on $PORT inside the container. Deliberately not duplicated here,

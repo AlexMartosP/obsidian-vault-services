@@ -7,7 +7,7 @@ import { ConfigError, loadConfig, resolveConfigFilePath } from "./config.ts";
 import { log, describeError } from "./logger.ts";
 import { VaultPaths } from "./vault/paths.ts";
 import { VaultStore } from "./vault/store.ts";
-import { createApi, createWebhookApi } from "./api/routes.ts";
+import { createApi, createPublicApi, createWebhookApi } from "./api/routes.ts";
 import { createMcpServer, createMcpTransport } from "./api/mcp.ts";
 import { Runtime, type Scheduler } from "./runtime.ts";
 import { ConfigWatcher } from "./config-watch.ts";
@@ -135,7 +135,12 @@ async function main(): Promise<void> {
         }
 
         if (url === "/mcp" || url.startsWith("/mcp?") || url.startsWith("/mcp/")) {
-            void handleMcp(req, res).catch((err: unknown) => {
+            void handleMcp(
+                req,
+                res,
+                () => runtime.config.accessKey,
+                () => createMcpServer(store, syncRunner, watcher),
+            ).catch((err: unknown) => {
                 log.error("mcp request failed", { error: describeError(err) });
                 if (!res.headersSent) {
                     res.writeHead(500, { "content-type": "application/json" });
@@ -148,7 +153,12 @@ async function main(): Promise<void> {
         apiListener(req, res);
     });
 
-    async function handleMcp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    async function handleMcp(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        expectedKey: () => string,
+        makeServer: () => ReturnType<typeof createMcpServer>,
+    ): Promise<void> {
         const header = req.headers.authorization;
         const xKey = req.headers["x-access-key"];
         const presented =
@@ -157,7 +167,7 @@ async function main(): Promise<void> {
                 : typeof xKey === "string"
                   ? xKey.trim()
                   : "";
-        if (presented === "" || !timingSafeEquals(presented, config.accessKey)) {
+        if (presented === "" || !timingSafeEquals(presented, expectedKey())) {
             res.writeHead(401, { "content-type": "application/json" });
             res.end(JSON.stringify({ error: "unauthorized" }));
             return;
@@ -165,7 +175,7 @@ async function main(): Promise<void> {
 
         // Stateless: a fresh server and transport per request, so concurrent
         // callers cannot collide on JSON-RPC request ids.
-        const mcpServer = createMcpServer(store, syncRunner, watcher);
+        const mcpServer = makeServer();
         const transport = createMcpTransport();
         res.on("close", () => {
             void transport.close();
@@ -180,10 +190,55 @@ async function main(): Promise<void> {
         log.info("vault-service listening", { port: config.port, vault: store.root });
     });
 
+    /**
+     * Optional second listener carrying only the vault surface, for putting
+     * behind a domain. It has its own key and a vault-only MCP tool set, so
+     * exposing it cannot reach Jira, backups or the config reload.
+     */
+    let publicServer: http.Server | null = null;
+    const publicApi = config.publicApi;
+    if (publicApi !== null) {
+        const publicListener = getRequestListener(
+            createPublicApi({
+                store,
+                accessKey: () => runtime.config.publicApi?.accessKey ?? publicApi.accessKey,
+            }).fetch,
+        );
+        publicServer = http.createServer((req, res) => {
+            const url = req.url ?? "/";
+            if (url === "/mcp" || url.startsWith("/mcp?") || url.startsWith("/mcp/")) {
+                void handleMcp(
+                    req,
+                    res,
+                    () => runtime.config.publicApi?.accessKey ?? publicApi.accessKey,
+                    // No runner and no watcher: the vault tools and nothing else.
+                    () => createMcpServer(store, null),
+                ).catch((err: unknown) => {
+                    log.error("public mcp request failed", { error: describeError(err) });
+                    if (!res.headersSent) {
+                        res.writeHead(500, { "content-type": "application/json" });
+                    }
+                    res.end(JSON.stringify({ error: "internal error" }));
+                });
+                return;
+            }
+            publicListener(req, res);
+        });
+        publicServer.listen(publicApi.port, () => {
+            log.info("public vault API listening", {
+                port: publicApi.port,
+                scope: "vault only, separate access key",
+            });
+        });
+    } else {
+        log.info("public vault API disabled, no PUBLIC_PORT or PUBLIC_ACCESS_KEY set");
+    }
+
     const shutdown = (signal: string) => {
         log.info("shutting down", { signal });
         watcher.stop();
         runtime.stop();
+        publicServer?.close();
         server.close(() => process.exit(0));
         // Do not hang forever on a stuck connection.
         setTimeout(() => process.exit(0), 10_000).unref();

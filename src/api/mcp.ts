@@ -135,21 +135,25 @@ export function createMcpServer(
             }),
     );
 
-    server.registerTool(
-        "jira_sync",
-        {
-            title: "Reconcile Jira tasks into the vault",
-            description:
-                "Re-query Jira and bring the synced task folder in line. Safe to call repeatedly; it is idempotent and leaves the vault untouched if Jira is unreachable.",
-            inputSchema: {},
-        },
-        () =>
-            guarded(async () => {
-                if (syncRunner === null) return fail("jira sync is disabled");
-                const result = await syncRunner.run();
-                return ok(JSON.stringify(result));
-            }),
-    );
+    // Registered only when a runner exists. A vault-only server therefore has
+    // no Jira tool at all, rather than one that refuses: an absent tool cannot
+    // be called by mistake, and the tool list is the contract a client sees.
+    if (syncRunner !== null) {
+        server.registerTool(
+            "jira_sync",
+            {
+                title: "Reconcile Jira tasks into the vault",
+                description:
+                    "Re-query Jira and bring the synced task folder in line. Safe to call repeatedly; it is idempotent and leaves the vault untouched if Jira is unreachable.",
+                inputSchema: {},
+            },
+            () =>
+                guarded(async () => {
+                    const result = await syncRunner.run();
+                    return ok(JSON.stringify(result));
+                }),
+        );
+    }
 
     if (watcher !== undefined) {
         server.registerTool(

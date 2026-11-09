@@ -115,9 +115,17 @@ export type BackupConfig = {
     couch: CouchConfig | null;
 };
 
+/** A second, deliberately smaller listener intended for a public domain. */
+export type PublicApiConfig = {
+    port: number;
+    accessKey: string;
+};
+
 export type Config = {
     configFile: string | null;
     port: number;
+    /** null when no public listener is configured, which is the default. */
+    publicApi: PublicApiConfig | null;
     /** Poll interval for picking up edits to the config file. */
     configPollMs: number;
     accessKey: string;
@@ -385,6 +393,15 @@ export function loadConfig(env: Env = process.env): Config {
     return {
         configFile: usedFile,
         port: resolvePort(env, file.server?.port),
+        publicApi: credentialsPresent(env, "Public API", ["PUBLIC_PORT", "PUBLIC_ACCESS_KEY"])
+            ? {
+                  port: intFrom(env, "PUBLIC_PORT", undefined, 8081),
+                  // A separate key on purpose: publishing the vault surface
+                  // must not hand out the key that also drives Jira, backups
+                  // and config reloads.
+                  accessKey: must(env, "PUBLIC_ACCESS_KEY"),
+              }
+            : null,
         configPollMs: intFrom(env, "CONFIG_POLL_MS", file.server?.configPollMs, 10_000),
         accessKey: must(env, "ACCESS_KEY"),
         vaultDir,

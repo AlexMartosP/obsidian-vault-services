@@ -205,3 +205,33 @@ describe("port resolution", () => {
         expect(() => loadConfig(baseEnv({ PORT: "not-a-port" }))).toThrow(ConfigError);
     });
 });
+
+describe("public vault API", () => {
+    it("is off unless both the port and its own key are set", () => {
+        writeConfig({});
+        expect(loadConfig(baseEnv()).publicApi).toBeNull();
+    });
+
+    it("fails loudly when only one of the pair is set", () => {
+        writeConfig({});
+        expect(() => loadConfig(baseEnv({ PUBLIC_PORT: "8081" }))).toThrow(/partly configured/);
+        expect(() => loadConfig(baseEnv({ PUBLIC_ACCESS_KEY: "k" }))).toThrow(/partly configured/);
+    });
+
+    it("uses a key distinct from the admin key", () => {
+        writeConfig({});
+        const config = loadConfig(
+            baseEnv({ PUBLIC_PORT: "8081", PUBLIC_ACCESS_KEY: "public-only" }),
+        );
+        expect(config.publicApi).toMatchObject({ port: 8081, accessKey: "public-only" });
+        // The whole point: exposing one must not expose the other.
+        expect(config.publicApi?.accessKey).not.toBe(config.accessKey);
+    });
+
+    it("rejects a nonsense public port", () => {
+        writeConfig({});
+        expect(() =>
+            loadConfig(baseEnv({ PUBLIC_PORT: "0", PUBLIC_ACCESS_KEY: "k" })),
+        ).toThrow(ConfigError);
+    });
+});

@@ -519,6 +519,55 @@ The bridge exposes no HTTP surface, so its healthcheck tests the one preconditio
 docker ps --format '{{.Names}}\t{{.Status}}'   # look for (healthy) / (unhealthy)
 ```
 
+## Exposing the vault on a domain
+
+There are two listeners, and only one is safe to publish:
+
+| | Port | Key | Surface |
+|---|---|---|---|
+| Admin | `PORT` (8080), published to `127.0.0.1` only | `ACCESS_KEY` | everything |
+| Public | `PUBLIC_PORT` (8081), exposed to the Docker network only | `PUBLIC_ACCESS_KEY` | the vault, nothing else |
+
+The public listener is a separate app built from an allowlist rather than the admin app with routes switched off. Jira, backups, config reload and the webhook are not mounted on it at all, so they answer **404** rather than being refused, and its MCP server registers only the five vault tools. The keys are not interchangeable in either direction.
+
+```
+public  :8081   /health  /v1/notes  /v1/note  /v1/search  /mcp
+                -> vault_list vault_read vault_write vault_delete vault_search
+admin   :8080   all of the above, plus /v1/jira/*  /v1/backup/run  /v1/config*
+                /jira/webhook, and the jira_sync and config_reload tools
+```
+
+To publish it:
+
+```sh
+PUBLIC_PORT=8081
+PUBLIC_ACCESS_KEY=$(openssl rand -hex 32)
+```
+
+then point your platform's domain at port `8081` on this service. It is `expose`d to the Docker network rather than published to the host, so the reverse proxy reaches it internally and the host gains no new listener. The admin port stays on loopback and should never get a domain; reach it over SSH:
+
+```sh
+ssh -L 8181:127.0.0.1:8181 <host>
+```
+
+Both are off by default: without `PUBLIC_PORT` and `PUBLIC_ACCESS_KEY` there is no public listener, and setting only one of the two is a startup error rather than a half-configured exposure.
+
+An MCP client then points at the domain:
+
+```jsonc
+{
+  "mcpServers": {
+    "vault": {
+      "type": "http",
+      "url": "https://vault.example.com/mcp",
+      "headers": { "Authorization": "Bearer <PUBLIC_ACCESS_KEY>" }
+    }
+  }
+}
+```
+
+Note the public surface still allows **writes**, since that is the point of reaching your vault remotely. A write lands in the vault and replicates to every device. If you want it read-only, say so; that is a smaller allowlist, not a new mechanism.
+
 ## Security posture
 
 Authentication is one shared access key, so **do not expose this publicly**. Compose binds it to `127.0.0.1` for that reason. Reach it from another container on the same network, or over a tunnel. Put TLS in front if it must leave the host.

@@ -17,12 +17,29 @@ export type Services = {
     watcher: ConfigWatcher;
 };
 
+export type PublicServices = {
+    store: VaultStore;
+    /** Resolved per request, so a reloaded key takes effect. */
+    accessKey: () => string;
+};
+
 /** Constant time comparison, so a wrong key cannot be found byte by byte. */
 function secretsMatch(a: string, b: string): boolean {
     const ab = Buffer.from(a);
     const bb = Buffer.from(b);
     if (ab.length !== bb.length) return false;
     return crypto.timingSafeEqual(ab, bb);
+}
+
+/** Gate every /v1 route on a key, resolved per request so a reload applies. */
+function requireAccessKey(app: Hono, expected: () => string): void {
+    app.use("/v1/*", async (c, next) => {
+        const key = presentedKey(c.req.header("authorization"), c.req.header("x-access-key"));
+        if (key === null || !secretsMatch(key, expected())) {
+            return c.json({ error: "unauthorized" }, 401);
+        }
+        await next();
+    });
 }
 
 function presentedKey(header: string | undefined, xKey: string | undefined): string | null {
@@ -43,39 +60,15 @@ const writeBody = z.object({
  */
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
-export function createApi(services: Services): Hono {
-    const app = new Hono();
-    const { runtime, store, watcher } = services;
-    // Read through the runtime rather than capturing it: a reload replaces the
-    // live config, and a captured copy would go stale.
-    const config = () => runtime.config;
-
-    app.get("/health", (c) =>
-        c.json({
-            ok: true,
-            vault: store.root,
-            jira: config().jira !== null,
-            backup: config().backup !== null,
-        }),
-    );
-
-    // Everything below requires the access key.
-    app.use("/v1/*", async (c, next) => {
-        const key = presentedKey(c.req.header("authorization"), c.req.header("x-access-key"));
-        if (key === null || !secretsMatch(key, config().accessKey)) {
-            return c.json({ error: "unauthorized" }, 401);
-        }
-        await next();
-    });
-
-    app.onError((err, c) => {
-        if (err instanceof PathOutsideVaultError) {
-            return c.json({ error: "invalid path" }, 400);
-        }
-        log.error("request failed", { path: c.req.path, error: describeError(err) });
-        return c.json({ error: "internal error" }, 500);
-    });
-
+/**
+ * The vault surface: reading, writing, deleting and searching notes.
+ *
+ * Shared verbatim by the admin app and the public app so the two cannot drift.
+ * Everything else (Jira, backups, config reload) is admin only and is mounted
+ * separately, which is what lets the public listener be exposed to a domain
+ * without also exposing the controls.
+ */
+function mountVaultRoutes(app: Hono, store: VaultStore): void {
     app.get("/v1/notes", async (c) => {
         const subdir = c.req.query("subdir") ?? "";
         const extParam = c.req.query("ext");
@@ -133,6 +126,36 @@ export function createApi(services: Services): Hono {
         }
         return c.json({ hits, truncated: false });
     });
+
+}
+
+export function createApi(services: Services): Hono {
+    const app = new Hono();
+    const { runtime, store, watcher } = services;
+    // Read through the runtime rather than capturing it: a reload replaces the
+    // live config, and a captured copy would go stale.
+    const config = () => runtime.config;
+
+    app.get("/health", (c) =>
+        c.json({
+            ok: true,
+            vault: store.root,
+            jira: config().jira !== null,
+            backup: config().backup !== null,
+        }),
+    );
+
+    requireAccessKey(app, () => config().accessKey);
+
+    app.onError((err, c) => {
+        if (err instanceof PathOutsideVaultError) {
+            return c.json({ error: "invalid path" }, 400);
+        }
+        log.error("request failed", { path: c.req.path, error: describeError(err) });
+        return c.json({ error: "internal error" }, 500);
+    });
+
+    mountVaultRoutes(app, store);
 
     app.get("/v1/jira/status", (c) => {
         const runner = runtime.syncRunner;
@@ -207,6 +230,38 @@ export function createApi(services: Services): Hono {
         return c.json(outcome, outcome.error === null ? 200 : 422);
     });
 
+    return app;
+}
+
+/**
+ * The publicly exposable surface: the vault, and nothing else.
+ *
+ * Deliberately a separate app rather than a flag on the admin one. Exposing a
+ * listener is the moment to be sure about what is reachable, and a allowlist
+ * built by construction is easier to be sure about than a set of conditionals
+ * scattered through a larger app. There is no Jira route, no backup trigger,
+ * no config reload and no webhook here, so none of them can be reached from a
+ * domain even by mistake.
+ *
+ * It also takes its own key, so publishing it does not hand out the admin key.
+ */
+export function createPublicApi(services: PublicServices): Hono {
+    const app = new Hono();
+    const { store, accessKey } = services;
+
+    app.get("/health", (c) => c.json({ ok: true, scope: "vault" }));
+
+    requireAccessKey(app, accessKey);
+
+    app.onError((err, c) => {
+        if (err instanceof PathOutsideVaultError) {
+            return c.json({ error: "invalid path" }, 400);
+        }
+        log.error("public request failed", { path: c.req.path, error: describeError(err) });
+        return c.json({ error: "internal error" }, 500);
+    });
+
+    mountVaultRoutes(app, store);
     return app;
 }
 
