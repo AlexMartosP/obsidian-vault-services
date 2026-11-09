@@ -39,7 +39,7 @@ services:
     # Pin this once you are happy with it, e.g.
     #   build: https://github.com/vrtmrz/livesync-bridge.git#<commit-sha>
     volumes:
-      # Rendered by bridge-config above, never written by hand.
+      # Rendered by init above, never written by hand.
       - bridge_dat:/app/dat:ro
       - ${VAULT_HOST_PATH:-vault_data}:/app/data/vault
       - bridge_state:/deno-dir/location_data
@@ -84,12 +84,10 @@ services:
       # would resolve to a path that does not exist on the host, and because
       # the repo checkout is replaced on every deploy.
       - ${CONFIG_DIR:-/data/vault-service/config}:/config:ro
-    # Auth is a single access key, so do not expose this publicly. Bound to
-    # loopback; put a TLS terminator in front if you need remote access.
-    #
-    # HOST_PORT is the only one you normally change: it must be free on the
-    # host. PORT is inside the container, where nothing else competes. Both
-    # come from .env so this mapping and the app cannot disagree.
+    # Two listeners, and only one is publishable. HOST_PORT is the one you
+    # normally change: it must be free on the host. PORT is inside the
+    # container, where nothing competes. Both come from .env so this mapping
+    # and the app cannot disagree.
     ports:
       # Admin surface: everything, including Jira, backups and config reload.
       # Loopback only, never a domain.
@@ -122,8 +120,9 @@ services:
         required: true
 
 volumes:
-  # Holds the bridge config rendered by bridge-config, mode 600 and
-  # root-owned, rebuilt from the environment on every start.
+  # Holds the bridge config rendered by init, owned by PUID and mode 644 so
+  # the bridge can read it whatever uid it runs as. Rebuilt from the
+  # environment on every start.
   #
   # Deliberately a normal volume, not tmpfs. A local-driver volume with
   # type=tmpfs is mounted into each container's own namespace, so what the
